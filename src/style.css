@@ -37,6 +37,8 @@ main { max-width: 780px; margin: 0 auto; padding: 0 16px 40px; }
   border-bottom: 1px solid var(--line);
 }
 .hdr h1 { margin: 0 0 6px; font-size: 24px; font-weight: 600; letter-spacing: .2px; }
+.hdr-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.hdr-row h1 { margin: 0; }
 .sub { margin: 0; color: var(--fg-dim); font-size: 14px; }
 
 h2 { font-size: 18px; font-weight: 600; margin: 0 0 10px; }
@@ -223,6 +225,45 @@ tr.dropout td { background: #2a1f1c; }
   color: var(--fg-mute); font-size: 13px;
 }
 .ftr p { margin: 0 0 8px; }
+
+/* ── aktualizace aplikace (service worker) ── */
+
+/* Tlačítko s ikonou — čtvercové, stejné barvy a rádiusu jako ostatní tlačítka.
+   Bez hover efektu (mobilní PWA), stav jen při stisku. */
+.btn.icon {
+  min-height: 44px;
+  width: 44px;
+  padding: 0;
+  flex: 0 0 auto;
+}
+
+/* Spinner — točí se, dokud se nová verze stahuje. Jen animace rotace,
+   žádný glow. */
+.spinner {
+  width: 16px; height: 16px; border-radius: 50%;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
+
+/* Hlášení výsledku — ploché, bez stínu a glow, dole nad bezpečnou zónou. */
+.toast {
+  position: fixed;
+  left: 50%; bottom: calc(24px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 200;
+  max-width: calc(100vw - 32px);
+  background: var(--bg-input);
+  border: 1px solid var(--line);
+  color: var(--fg);
+  border-radius: var(--radius);
+  padding: 12px 18px;
+  font-size: 14px;
+  text-align: center;
+}
+.toast.hidden { display: none; }
 
 @media (max-width: 420px) {
   .actions .btn { flex: 1 1 100%; }

@@ -2,7 +2,7 @@
  * Service worker — offline provoz.
  * Verze cache zvyš při změně souborů, jinak se drží stará.
  */
-const CACHE = 'vocal-lab-v5';
+const CACHE = 'vocal-lab-v6';
 const ASSETS = [
   './',
   './index.html',
@@ -14,8 +14,16 @@ const ASSETS = [
   './src/charts.js',
 ];
 
+// Nová verze se NEAKTIVUJE sama. Čeká, dokud ji o to nepožádá tlačítko
+// aktualizace v hlavičce (zpráva SKIP_WAITING). Kdyby se aktivovala hned,
+// převzala by kontrolu uprostřed rozehrané práce — a hlavně by se pak
+// nedalo poznat, že nějaká aktualizace vůbec čeká.
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)));
+});
+
+self.addEventListener('message', (e) => {
+  if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting();
 });
 
 self.addEventListener('activate', (e) => {

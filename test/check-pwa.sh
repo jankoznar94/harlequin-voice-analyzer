@@ -16,7 +16,7 @@ chk "manifest má theme_color"             "grep -q 'theme_color' manifest.webma
 chk "ikona existuje"                      "test -f icon.svg"
 chk "service worker soubor existuje"      "test -f sw.js"
 chk "SW registrace v app.js"              "grep -q 'serviceWorker.register' src/app.js"
-chk "SW registrace má .catch()"           "grep -q \"register('sw.js').catch\" src/app.js"
+chk "SW registrace má .catch()"           "grep -qE \"register\\('sw.js'\\)\" src/app.js && grep -q '\\.catch(' src/app.js"
 chk "SW cachuje všechny assety"           "grep -q 'src/analysis.js' sw.js && grep -q 'src/charts.js' sw.js"
 chk "apple-touch-icon přítomen"           "grep -q 'apple-touch-icon' index.html"
 chk "iOS meta tag přítomen"               "grep -q 'apple-mobile-web-app-capable' index.html"

@@ -565,10 +565,152 @@ function init() {
 
   renderHist();
 
-  // Service worker (offline)
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+  // Service worker (offline) + tlačítko pro kontrolu nové verze
+  registerSW();
+}
+
+/* ═══════════════════════════════════════ aktualizace aplikace */
+
+/**
+ * Registrace service workeru a tlačítko „zkontrolovat novou verzi".
+ *
+ * Service worker sám drží staré assety, dokud se neaktivuje nový — proto se
+ * aplikace po nasazení může tvářit nezměněná. Tlačítko v hlavičce proto
+ * vynutí `registration.update()`, počká, až se nový worker skutečně stáhne
+ * (spinner běží celou dobu), a teprve pak dá reload.
+ *
+ * Dvě věci, které se snadno pokazí a jsou tady proto ošetřené:
+ *  1. `registration.update()` se vrátí dřív, než se nový worker vůbec objeví
+ *     (instalace assetů běží asynchronně). Čtení `registration.installing`
+ *     hned po `update()` proto vrací null — musí se počkat na `updatefound`.
+ *  2. Nový worker se aktivuje, teprve když ten starý uvolní kontrolu. Až se
+ *     tak stane, `controllerchange` vyvolá reload. Bez čekání na `installed`
+ *     by se stránka reloadovala zbytečně dvakrát.
+ */
+let swReg = null;
+let swChecking = false;
+let reloading = false;
+
+function showToast(msg) {
+  const el = $('toast');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => el.classList.add('hidden'), 2600);
+}
+
+function setUpdating(on) {
+  $('btn-update').disabled = on;
+  const ic = $('upd-icon');
+  ic.innerHTML = on
+    ? '<span class="spinner"></span>'
+    : '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"' +
+      ' stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">' +
+      '<path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>';
+}
+
+/**
+ * Počká, než se nový worker doinstaluje. Vrací true/false — bez časového
+ * limitu by tlačítko viselo ve spinneru navždy, kdyby stahování uvázlo.
+ */
+function waitForInstalled(worker, timeoutMs = 20000) {
+  const ready = () => worker.state === 'installed' || worker.state === 'activated';
+  if (ready()) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const onState = () => { if (ready()) done(true); };
+    const done = (ok) => {
+      clearTimeout(timer);
+      worker.removeEventListener('statechange', onState);
+      resolve(ok);
+    };
+    const timer = setTimeout(() => done(false), timeoutMs);
+    worker.addEventListener('statechange', onState);
+  });
+}
+
+async function checkForUpdate() {
+  if (swChecking) return;
+
+  // Bez service workeru (vývoj přes http, starý prohlížeč) není co aktualizovat.
+  if (!swReg) {
+    showToast('Aktualizaci nelze zkontrolovat — aplikace neběží jako PWA.');
+    return;
   }
+
+  swChecking = true;
+  setUpdating(true);
+  try {
+    await swReg.update();
+
+    // `updatefound` vyletí, jakmile prohlížeč zjistí, že je na serveru jiný
+    // sw.js. Když nic nového není, nevyletí vůbec a žádný signál „hotovo, nic
+    // není" neexistuje — proto se čeká jen krátce. Delší čekání by znamenalo
+    // spinner navíc u každého kliknutí, kdy je aplikace aktuální.
+    let worker = swReg.waiting || swReg.installing;
+    if (!worker) {
+      worker = await new Promise((resolve) => {
+        const done = (w) => {
+          clearTimeout(timer);
+          swReg.removeEventListener('updatefound', onFound);
+          resolve(w || null);
+        };
+        const onFound = () => done(swReg.installing);
+        swReg.addEventListener('updatefound', onFound);
+        const timer = setTimeout(() => done(swReg.installing), 3000);
+      });
+    }
+
+    if (!worker) {
+      showToast('Máš nejnovější verzi.');
+      return;
+    }
+
+    // Počkat, až se assety skutečně stáhnou — teprve pak má cenu reloadovat.
+    if (worker.state === 'installing' || worker.state === 'installed') {
+      const ok = await waitForInstalled(worker);
+      if (!ok) {
+        showToast('Stahování nové verze trvá příliš dlouho. Zkus to znovu.');
+        return;
+      }
+    }
+
+    // Reload až ve chvíli, kdy nový worker převezme kontrolu. Kdyby se
+    // reloadovalo dřív, stránku by ještě obsluhoval starý worker a uživatel
+    // by viděl pořád tu samou verzi.
+    if (swReg.waiting) {
+      const onControl = () => {
+        if (reloading) return;
+        reloading = true;
+        showToast('Aktualizováno, načítám…');
+        setTimeout(() => location.reload(), 250);
+      };
+      navigator.serviceWorker.addEventListener('controllerchange', onControl);
+      swReg.waiting.postMessage({ type: 'SKIP_WAITING' });
+    } else {
+      // Nic nečeká na kontrolu (první instalace) — reload může hned.
+      reloading = true;
+      showToast('Aktualizováno, načítám…');
+      setTimeout(() => location.reload(), 250);
+    }
+  } catch (e) {
+    console.warn('Kontrola aktualizace selhala', e);
+    showToast('Kontrolu aktualizace se nepodařilo dokončit.');
+  } finally {
+    swChecking = false;
+    setUpdating(false);
+  }
+}
+
+function registerSW() {
+  if (!('serviceWorker' in navigator)) {
+    // Tlačítko nechat funkční, ať uživatel dostane vysvětlení, ne mrtvý prvek.
+    $('btn-update').onclick = checkForUpdate;
+    return;
+  }
+  navigator.serviceWorker.register('sw.js')
+    .then((reg) => { swReg = reg; })
+    .catch((e) => console.warn('Service worker se nepodařilo zaregistrovat', e));
+  $('btn-update').onclick = checkForUpdate;
 }
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
