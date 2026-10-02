@@ -1,0 +1,26 @@
+{
+  "name": "Analýza zpěvního hlasu",
+  "short_name": "Hlas",
+  "description": "Akustická analýza zpěvního hlasu — ring, formanty a barva hlasu. Vše se počítá v prohlížeči.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#1a1715",
+  "theme_color": "#1a1715",
+  "lang": "cs",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

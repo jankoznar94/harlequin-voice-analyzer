@@ -1,0 +1,16 @@
+# závislosti (projekt žádné nemá, ale pro jistotu)
+node_modules/
+npm-debug.log*
+
+# dočasné soubory z vývoje
+/tmp-amor.wav
+*.tmp
+
+# lokální poznámky
+*.local.md
+.DS_Store
+Thumbs.db
+
+# firebase debug
+firebase-debug.log
+firebase-debug.*.log

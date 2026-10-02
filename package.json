@@ -1,0 +1,19 @@
+{
+  "name": "analýza-zpevniho-hlasu",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Akustická analýza zpěvního hlasu v prohlížeči — ring, formanty a barva hlasu. Bez serveru, bez závislostí.",
+  "type": "module",
+  "scripts": {
+    "start": "node serve.mjs 8123",
+    "test": "node test/test-dsp.mjs && node test/test-pipeline.mjs",
+    "test:dsp": "node test/test-dsp.mjs",
+    "test:pipeline": "node test/test-pipeline.mjs",
+    "verify": "node test/verify.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": ["voice", "singing", "dsp", "formant", "spectrogram", "praat", "pwa"],
+  "license": "MIT"
+}
