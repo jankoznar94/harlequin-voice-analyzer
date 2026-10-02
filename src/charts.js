@@ -21,7 +21,7 @@ function setup(canvas, cssHeight) {
   ctx.fillStyle = COL.bg;
   ctx.fillRect(0, 0, w, h);
   ctx.font = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-  return { ctx, w, h };
+  return { ctx, w, h, dpr };
 }
 
 function niceTicks(min, max, count = 5) {
@@ -204,7 +204,7 @@ export function drawF1(canvas, notes, hintEl) {
 
 export function drawSpec(canvas, samples, sampleRate, notes) {
   const H = 300;
-  const { ctx, w, h } = setup(canvas, H);
+  const { ctx, w, h, dpr } = setup(canvas, H);
   const padL = 42, padR = 12, padT = 12, padB = 26;
   const plotW = Math.round(w - padL - padR), plotH = Math.round(h - padT - padB);
 
@@ -218,31 +218,61 @@ export function drawSpec(canvas, samples, sampleRate, notes) {
   const win = new Float64Array(nfft);
   for (let i = 0; i < nfft; i++) win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (nfft - 1));
 
-  // připrav FFT pro každý sloupec
-  const img = ctx.createImageData(plotW, plotH);
+  // Připrav FFT pro každý sloupec.
+  //
+  // POZOR — tady byla chyba, kterou je vidět jen na displeji s devicePixelRatio > 1:
+  // createImageData() vrací buffer v PAMĚŤOVÝCH pixelech, a putImageData()
+  // transformaci canvasu IGNORUJE (pracuje v device px). Buffer vytvořený na
+  // (plotW × plotH) se tedy při dpr = 2 vložil jen do levé horní ČTVRTINY
+  // vykreslovací plochy a zbytek grafu zůstal prázdný.
+  // Řešení: buffer se plní v device px (plotW·dpr × plotH·dpr) a na plátno se
+  // dostane přes drawImage, který se současnou transformací naopak počítá.
+  const devW = Math.round(plotW * dpr), devH = Math.round(plotH * dpr);
+  const img = ctx.createImageData(devW, devH);
   const re = new Float64Array(nfft), im = new Float64Array(nfft);
+  const dbLo = -95, dbHi = 12;   // rozsah dynamiky obrazu
 
+  // Odstup šumového dna od špičky se měří jednou za nahrávku. Různé mikrofony
+  // a úrovně se liší o desítky dB; bez normalizace je obraz buď celý sytý,
+  // nebo celý tmavý.
+  const rawDb = new Float32Array(plotW * plotH);
   for (let col = 0; col < plotW; col++) {
     const start = Math.min(samples.length - nfft, col * hop);
     for (let i = 0; i < nfft; i++) { re[i] = (samples[start + i] || 0) * win[i]; im[i] = 0; }
     fftLocal(re, im);
-    // převeď na dB a ulož do sloupce
     for (let row = 0; row < plotH; row++) {
       const frac = 1 - row / plotH;
       const bin = Math.min(maxBin, Math.round(frac * maxBin));
       const p = re[bin] * re[bin] + im[bin] * im[bin];
-      const db = 10 * Math.log10(p + 1e-20);
-      // mapuj -100..-10 dB na 0..255 (teplé tmavé tóny)
-      let t = (db + 100) / 90;
-      t = Math.max(0, Math.min(1, t));
-      const idx = (row * plotW + col) * 4;
-      img.data[idx]     = 26 + t * 190;          // R
-      img.data[idx + 1] = 22 + t * 130;          // G
-      img.data[idx + 2] = 20 + t * 60;           // B
-      img.data[idx + 3] = 255;
+      rawDb[row * plotW + col] = 10 * Math.log10(p + 1e-20);
     }
   }
-  ctx.putImageData(img, padL, padT);
+
+  // Normalizace na úroveň nahrávky: špička = 0 dB. Různé mikrofony a úrovně
+  // se liší o desítky dB; bez normalizace je obraz buď celý sytý, nebo celý
+  // tmavý. Bere se 99,5. percentil, ne absolutní maximum — jediný prásk nebo
+  // klepnutí do mikrofonu by jinak celý spektrogram utopilo.
+  const sorted = Float32Array.from(rawDb).sort();
+  const norm = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.995))];
+  // dpr bývá i neceločíselné (Windows 125 %, 150 %) — hranice pixelů se proto
+  // zaokrouhlují, ne násobí. Sloupec/řádek tak může mít 2 nebo 3 device px.
+  for (let row = 0; row < plotH; row++) {
+    const devRow0 = Math.round(row * dpr), devRow1 = Math.round((row + 1) * dpr);
+    for (let col = 0; col < plotW; col++) {
+      let t = (rawDb[row * plotW + col] - norm - dbLo) / (dbHi - dbLo);
+      t = Math.max(0, Math.min(1, t));
+      const R = 26 + t * 190, G = 22 + t * 130, B = 20 + t * 60;   // teplé tmavé tóny
+      const devCol0 = Math.round(col * dpr), devCol1 = Math.round((col + 1) * dpr);
+      for (let dy = devRow0; dy < devRow1; dy++) {
+        let idx = (dy * devW + devCol0) * 4;
+        for (let dx = devCol0; dx < devCol1; dx++) {
+          img.data[idx] = R; img.data[idx + 1] = G; img.data[idx + 2] = B; img.data[idx + 3] = 255;
+          idx += 4;
+        }
+      }
+    }
+  }
+  blitImageData(ctx, img, padL, padT, plotW, plotH);
 
   // pásmo singer's formantu
   const yFor = (hz) => padT + plotH - (hz / maxHz) * plotH;
@@ -360,6 +390,30 @@ export function drawTrend(canvas, rows) {
   const y100 = Math.round(yR(100)) + 0.5;
   ctx.beginPath(); ctx.moveTo(xR0, y100); ctx.lineTo(xR0 + half, y100); ctx.stroke();
   ctx.setLineDash([]);
+}
+
+/**
+ * Vloží ImageData na zadané místo canvasu.
+ *
+ * `ctx.putImageData(img, x, y)` má dvě pasti, které se v grafu projeví jako
+ * „data sražená do malého čtverce vlevo nahoře":
+ *  1. (x, y) jsou souřadnice BODU V BUFERU, ze kterého se začne kreslit — ne
+ *     cíl na plátně. Vložení „na (padL, padT)" proto kreslí od levého horního
+ *     rohu canvasu a levý horní roh bufferu zahodí.
+ *  2. Transformaci canvasu ignoruje, takže na displeji s devicePixelRatio > 1
+ *     se buffer ve CSS pixelech vloží jen do levé horní 1/dpr² plochy.
+ * Pomocný canvas + drawImage zvládne obojí: buffer se vloží od svého (0, 0)
+ * a na plátno se dostane s rozměry v CSS px, takže je vždy přesně vyplněné.
+ *
+ * @param {number} [cssW] šířka v CSS px, na kterou se má obraz roztáhnout
+ * @param {number} [cssH] výška v CSS px
+ */
+function blitImageData(ctx, img, x, y, cssW, cssH) {
+  const off = document.createElement('canvas');
+  off.width = img.width; off.height = img.height;
+  off.getContext('2d').putImageData(img, 0, 0);
+  if (cssW && cssH) ctx.drawImage(off, x, y, cssW, cssH);
+  else ctx.drawImage(off, x, y);
 }
 
 /** Lokální FFT (aby modul nezávisel na analysis.js kvůli velikosti). */
