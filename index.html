@@ -7,7 +7,12 @@
 <meta name="description" content="Akustická analýza zpěvního hlasu — ring, formanty a barva hlasu. Vše počítáno v prohlížeči, nahrávky nikam neodcházejí.">
 <title>Analýza zpěvního hlasu</title>
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="stylesheet" href="src/style.css">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Hlas">
+<link rel="stylesheet" href="src/style.css?v=1">
 </head>
 <body>
 
@@ -66,7 +71,6 @@
   <section id="panel-progress" class="panel hidden">
     <p id="prog-text">Zpracovávám…</p>
     <div class="bar"><div id="prog-fill" class="bar-fill"></div></div>
-    <p class="hint" id="prog-detail"></p>
     <button id="btn-cancel" class="btn ghost" type="button">Zrušit</button>
   </section>
 
@@ -192,6 +196,6 @@
   <p><button id="btn-clear" class="link" type="button">Smazat všechna uložená data</button></p>
 </footer>
 
-<script type="module" src="src/app.js"></script>
+<script type="module" src="src/app.js?v=1"></script>
 </body>
 </html>
