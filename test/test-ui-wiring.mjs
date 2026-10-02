@@ -41,7 +41,7 @@ check('žádné osiřelé ID', orphanReal.length === 0,
   orphanReal.length ? 'osiřelé: ' + orphanReal.join(', ') : '');
 
 console.log('\n═══ 3. Dynamicky vytvářené prvky mají svůj protějšek ═══');
-// KPI: app nastavuje <id> a <id>-s
+// KPI: app nastavuje <id>, <id>-s (popisek) a <id>-d (lidské vysvětlení)
 const kpiBases = [...app.matchAll(/setKpi\('([^']+)'/g)].map(m => m[1]);
 const kpiMissing = [];
 for (const b of new Set(kpiBases)) {
@@ -50,6 +50,36 @@ for (const b of new Set(kpiBases)) {
 }
 check(`KPI ${[...new Set(kpiBases)].length} párů (hodnota + popisek)`, kpiMissing.length === 0,
   kpiMissing.length ? 'chybí: ' + kpiMissing.join(', ') : '');
+
+// Popisky -d: app je předává jako 5. argument setKpi. Každý musí v HTML existovat,
+// jinak uživatel u ukazatele nevidí žádné vysvětlení (a to je celý smysl).
+// POZOR: nejde použít setKpi\([^)]*?… — argumenty obsahují vnořené závorky
+// (např. ringPct.toFixed(0)), takže se hledá rovnou ID v celém app.js.
+const kpiDesc = [...app.matchAll(/'(k-[\w-]+-d)'/g)].map(m => m[1]);
+const descMissing = [...new Set(kpiDesc)].filter(id => !idsInHtml.has(id));
+check(`${new Set(kpiDesc).size} popisků s vysvětlením existuje`, descMissing.length === 0,
+  descMissing.length ? 'chybí: ' + descMissing.join(', ') : '');
+check('každý ukazatel má i lidské vysvětlení',
+  new Set(kpiBases).size === new Set(kpiDesc).size,
+  `${new Set(kpiBases).size} ukazatelů vs ${new Set(kpiDesc).size} vysvětlení`);
+
+// Sloupce tabulky: hlavička a tělo musí mít stejný počet sloupců, jinak se
+// tabulka rozjede a čísla sedí pod špatnými názvy.
+{
+  const thead = html.match(/<table id="t-notes">[\s\S]*?<\/thead>/);
+  const thCount = thead ? (thead[0].match(/<th>/g) || []).length : 0;
+  const rowBlock = app.match(/tbody'\)[\s\S]*?tb\.append\(tr\)/);
+  let cellCount = 0;
+  if (rowBlock) {
+    const body = rowBlock[0];
+    cellCount = (body.match(/cell\(/g) || []).length
+      + (body.match(/Object\.assign\(document\.createElement\('td'\)/g) || []).length
+      + (body.match(/tr\.append\(ring,/g) || []).length
+      + (body.match(/^\s*ring,$/gm) || []).length;
+  }
+  check(`tabulka: ${thCount} sloupců v hlavičce = ${cellCount} v řádku`,
+    thCount > 0 && thCount === cellCount);
+}
 
 console.log('\n═══ 4. Canvas elementy, na které se kreslí ═══');
 const canvases = [...app.matchAll(/draw\w+\(\$\('([^']+)'\)/g)].map(m => m[1]);

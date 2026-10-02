@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Hlas">
-<link rel="stylesheet" href="src/style.css?v=2">
+<link rel="stylesheet" href="src/style.css?v=3">
 </head>
 <body>
 
@@ -82,59 +82,75 @@
     <div id="r-unusable" class="warn hidden"></div>
 
     <div id="r-body">
+      <p class="verdict" id="r-verdict"></p>
+
       <div class="kpis">
-        <div class="kpi">
+        <div class="kpi wide">
           <span class="kpi-v" id="k-ring">—</span>
-          <span class="kpi-l">tónů s ringem</span>
+          <span class="kpi-l">Ring drží na tolika tónech</span>
           <span class="kpi-s" id="k-ring-s"></span>
+          <p class="kpi-d" id="k-ring-d"></p>
         </div>
-        <div class="kpi">
-          <span class="kpi-v" id="k-spr">—</span>
-          <span class="kpi-l">SPR (dB)</span>
-          <span class="kpi-s" id="k-spr-s"></span>
+        <div class="kpi wide">
+          <span class="kpi-v" id="k-level">—</span>
+          <span class="kpi-l">Síla ringu</span>
+          <span class="kpi-s" id="k-level-s"></span>
+          <p class="kpi-d" id="k-level-d"></p>
         </div>
-        <div class="kpi">
-          <span class="kpi-v" id="k-fhe">—</span>
-          <span class="kpi-l">FHE (Hz)</span>
-          <span class="kpi-s" id="k-fhe-s"></span>
-        </div>
-        <div class="kpi">
+        <div class="kpi wide">
           <span class="kpi-v" id="k-f1">—</span>
-          <span class="kpi-l">F1 laděno</span>
+          <span class="kpi-l">Ladění vysokých tónů</span>
           <span class="kpi-s" id="k-f1-s"></span>
+          <p class="kpi-d" id="k-f1-d"></p>
+        </div>
+        <div class="kpi wide">
+          <span class="kpi-v" id="k-count">—</span>
+          <span class="kpi-l">Změřeno tónů</span>
+          <span class="kpi-s" id="k-count-s"></span>
+          <p class="kpi-d" id="k-count-d"></p>
         </div>
       </div>
 
-      <p class="verdict" id="r-verdict"></p>
+      <div class="note">
+        <strong>Jak to číst:</strong> „Ring drží" znamená, že se tón svou barvou
+        neodchyluje od ostatních — přesně to je cíl, protože ring má být na
+        <em>každém</em> tónu. „Síla ringu" říká, jak je na tom hlas jako takový,
+        ve srovnání s tím, co je známo o zpěvácích obecně. Ty dvě věci mohou být
+        rozdílné: rovnoměrně slabý hlas má ring „držící", ale slabý.
+      </div>
+
       <p class="warn-soft hidden" id="r-dropouts"></p>
 
-      <h3>Ring po tónech</h3>
-      <p class="hint">Zeleně = ring přítomen, červeně = výpadek. Ring má být
-         <strong>na každém tónu</strong> — hledej proto díry, ne průměr.</p>
+      <h3>Kde se ring ztrácí</h3>
+      <p class="hint">Každý sloupec je jeden tón. Vodorovná osa je <strong>čas
+         v nahrávce</strong> — najdi v ní přesné místo, kde je sloupec červený,
+         a vrať se tam.</p>
       <canvas id="c-spr" class="chart" height="230"></canvas>
 
-      <h3>Ladění F1 na tón</h3>
+      <h3>Ladění prvního formantu</h3>
       <p class="hint" id="hint-f1"></p>
       <canvas id="c-f1" class="chart" height="200"></canvas>
 
       <h3>Spektrogram</h3>
-      <p class="hint">Světlejší pruh kolem 2,5–3,2 kHz je pásmo zpěváckého formantu
-         (ring).</p>
+      <p class="hint">Světlejší pruh kolem 2,5–3,2 kHz je pásmo zpěváckého
+         formantu (ring). Kde pruh chybí, tam ring na tónu není.</p>
       <canvas id="c-spec" class="chart tall" height="300"></canvas>
 
-      <h3>Naměřené hodnoty</h3>
-      <div class="tbl-wrap">
-        <table id="t-notes">
-          <thead>
-            <tr>
-              <th>#</th><th>tón</th><th>f0 Hz</th><th>délka</th><th>SPR dB</th>
-              <th>ring</th><th>F1</th><th>F2</th><th>F1:F0 %</th><th>HNR</th>
-              <th>vibr. Hz</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
+      <details class="tips">
+        <summary>Naměřené hodnoty a čísla (pro podrobné srovnání)</summary>
+        <div class="tbl-wrap">
+          <table id="t-notes">
+            <thead>
+              <tr>
+                <th>#</th><th>tón</th><th>čas</th><th>f0 Hz</th><th>délka</th>
+                <th>SPR dB</th><th>ring</th><th>F1</th><th>F2</th><th>F1:F0 %</th>
+                <th>HNR</th><th>vibr. Hz</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </details>
 
       <div class="actions">
         <button id="btn-save" class="btn primary" type="button">Uložit do historie</button>
@@ -196,6 +212,6 @@
   <p><button id="btn-clear" class="link" type="button">Smazat všechna uložená data</button></p>
 </footer>
 
-<script type="module" src="src/app.js?v=2"></script>
+<script type="module" src="src/app.js?v=3"></script>
 </body>
 </html>

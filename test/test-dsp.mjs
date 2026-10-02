@@ -5,7 +5,7 @@
  */
 import { fft, ltas, spr, fhe, alphaRatio, sprValid, pitchTrack, medianFilter,
   segmentNotes, hzToNote, lpcBurg, findFormants, formantsAt, vibrato, hnr,
-  analyze } from '../src/analysis.js';
+  analyze, countNotePlateaus, ringAnalysis } from '../src/analysis.js';
 
 let pass = 0, fail = 0;
 const results = [];
@@ -275,6 +275,121 @@ console.log('\n═══ 10. Pásmo se měří JEDNOU za nahrávku (regrese) ═
     anyMeasured ? 'NĚKTERÉ TÓNY PROŠLY — chyba!' : '');
   check('useknuté pásmo → summary hlásí unusable',
     resTel.summary.spr_unusable === true);
+}
+
+console.log('\n═══ 11. Segmentace not — ground truth (regrese) ═══');
+{
+  // REÁLNÁ CHYBA, která se nesmí vrátit: stará segmentace slévala legato
+  // stupnici a rychlé pasáže do JEDNOHO tónu (8 not → 1, 16 not → 1) a na
+  // skocích přes oktávu noty ztrácela (5 → 3). Počet tónů tím byl bez vztahu
+  // k realitě. Nový čítač s ukotvenou notou to řeší — ověřeno na 9 případech.
+  const SRl = 44100;
+  const H = (m) => 440 * Math.pow(2, (m - 69) / 12);
+  function nota(midi, dur, gap) {
+    const n = Math.round(dur * SRl);
+    const out = new Float64Array(n);
+    const ph = new Float64Array(n + 1);
+    for (let i = 0; i < n; i++) {
+      const t = i / SRl;
+      const f = H(midi) * (1 + (40 / 1200) * Math.sin(2 * Math.PI * 5.5 * t));
+      ph[i + 1] = ph[i] + 2 * Math.PI * f / SRl;
+      let v = 0;
+      for (let h = 1; h <= 40; h++) {
+        const fh = h * f;
+        if (fh > SRl / 2) break;
+        let a = 1 / h;
+        for (const [F, BW, g] of [[700, 90, 1.6], [1150, 110, 1.0], [2600, 140, 0.8]]) {
+          a += g / (1 + ((fh - F) / BW) ** 2) * (1 / h) * 2;
+        }
+        v += a * Math.sin(h * ph[i]);
+      }
+      const e = Math.min(1, t / (0.05 * dur), (dur - t) / (0.08 * dur));
+      out[i] = v * Math.max(0, e) * 0.25;
+    }
+    return { out, gap };
+  }
+  function skladba(spec) {
+    const parts = [];
+    for (const [m, d, g] of spec) {
+      const { out } = nota(m, d);
+      parts.push(out);
+      if (g) parts.push(new Float64Array(Math.round(g * SRl)));
+    }
+    const total = parts.reduce((s, p) => s + p.length, 0);
+    const sig = new Float64Array(total);
+    let off = 0;
+    for (const p of parts) { sig.set(p, off); off += p.length; }
+    return sig;
+  }
+  const pripady = [
+    ['8 not po 0,8 s + pauzy', [[60, .8, .25], [62, .8, .25], [64, .8, .25], [65, .8, .25], [67, .8, .25], [69, .8, .25], [71, .8, .25], [72, .8, .25]], 8],
+    ['8 not po 0,4 s', [[60, .4, .2], [62, .4, .2], [64, .4, .2], [65, .4, .2], [67, .4, .2], [69, .4, .2], [71, .4, .2], [72, .4, .2]], 8],
+    ['8 not legato 0,7 s', [[60, .7, 0], [62, .7, 0], [64, .7, 0], [65, .7, 0], [67, .7, 0], [69, .7, 0], [71, .7, 0], [72, .7, 0]], 8],
+    ['8 not legato 1,0 s', [[60, 1, 0], [62, 1, 0], [64, 1, 0], [65, 1, 0], [67, 1, 0], [69, 1, 0], [71, 1, 0], [72, 1, 0]], 8],
+    ['12 not legato 0,35 s', Array.from({ length: 12 }, (_, i) => [57 + (i % 8), .35, 0]), 12],
+    ['16 not po 0,25 s', Array.from({ length: 16 }, (_, i) => [60 + (i % 8), .25, .08]), 16],
+    ['3 držené tóny 2,5 s', [[57, 2.5, .6], [60, 2.5, .6], [64, 2.5, .6]], 3],
+    ['5 skoků přes oktávu', [[48, .8, .3], [60, .8, .3], [52, .8, .3], [64, .8, .3], [55, .8, .3]], 5],
+    ['6 not sestupně legato', [[72, .6, 0], [69, .6, 0], [65, .6, 0], [62, .6, 0], [60, .6, 0], [57, .6, 0]], 6],
+  ];
+  for (const [nazev, spec, ocekavano] of pripady) {
+    const sig = skladba(spec);
+    const tr = pitchTrack(sig, SRl);
+    const sm = medianFilter(tr.f0, 15);
+    const p = countNotePlateaus(tr.times, sm, {});
+    check(`segmentace: ${nazev}`, p.length === ocekavano,
+      `očekáváno ${ocekavano}, nalezeno ${p.length}`);
+  }
+  // pomalý klouzavý přechod je JEDEN tón, ne dvanáct — mezera mezi skupinami
+  const glide = new Float64Array(Math.round(3.0 * SRl));
+  {
+    const ph = new Float64Array(glide.length + 1);
+    for (let i = 0; i < glide.length; i++) {
+      const t = i / SRl;
+      const f = H(48) * Math.pow(2, (12 / 12) * (t / 3.0));
+      ph[i + 1] = ph[i] + 2 * Math.PI * f / SRl;
+      let v = 0;
+      for (let h = 1; h <= 30; h++) { if (h * f > SRl / 2) break; v += (1 / h) * Math.sin(h * ph[i]); }
+      glide[i] = v * 0.25;
+    }
+  }
+  const gt = pitchTrack(glide, SRl);
+  const gp = countNotePlateaus(gt.times, medianFilter(gt.f0, 15), {});
+  check('segmentace: klouzavý přechod = 1 tón', gp.length === 1, `nalezeno ${gp.length}`);
+}
+
+console.log('\n═══ 12. Vyhodnocení ringu (regrese) ═══');
+{
+  // REÁLNÁ CHYBA, která se nesmí vrátit: ring_ok se počítalo jako
+  // spr >= max(vlastní práh, −20 dB). Medián SPR běžné nahrávky leží kolem
+  // −19 dB, takže absolutní mez rozpůlila sadu a hlásila „~50 % tónů bez
+  // ringu", i když byly všechny stejné. Navíc medián±MAD selže, když je bez
+  // ringu asi polovina tónů — proto se dvouhroté rozdělení řeší mezerou.
+  const mk = (sprs) => sprs.map((v, i) => ({
+    idx: i, note: 'X', t_start: i, dur: 0.8, spl_dbfs: -12,
+    spr: v, spr_valid: true, f1_tuning_relevant: false, f1_f0_err_pct: NaN,
+    fhe: 2500, bandwidth_hz: 5000,
+  }));
+  // rovnoměrný hlas → žádný výpadek, i když je hladina nízká
+  const a = ringAnalysis(mk([-25.1, -24.8, -25.4, -25.0, -24.9, -25.2, -25.3, -24.7, -25.5, -25.0]));
+  check('rovnoměrná hladina → 0 výpadků', a.dropouts.length === 0,
+    `${a.dropouts.length}, vyrovnanost ${a.ring_consistency_pct.toFixed(0)} %`);
+  check('rovnoměrně nízká hladina → úroveň pod nezpěvákem', a.level === 'pod_nezpevakem',
+    `${a.level} (medián ${a.spr_median.toFixed(1)} dB, mez nezpěváka −22,7)`);
+  // jeden propadlý tón → musí se najít
+  const b = ringAnalysis(mk([-15.2, -14.8, -15.5, -28.3, -15.1, -14.9, -15.3, -15.0, -14.7, -15.4]));
+  check('jeden tón bez ringu → 1 výpadek', b.dropouts.length === 1,
+    `${b.dropouts.length}, vyrovnanost ${b.ring_consistency_pct.toFixed(0)} %`);
+  // POLOVINA tónů bez ringu — tady selhával medián±MAD, musí to najít mezera
+  const c = ringAnalysis(mk([-14.8, -27.9, -15.1, -28.4, -14.9, -28.1, -15.3, -27.7, -15.0, -28.2]));
+  check('polovina tónů bez ringu → najde 5 výpadků', c.dropouts.length === 5,
+    `${c.dropouts.length}, metoda „${c.threshold_method}"`);
+  check('polovina bez ringu → použita mezera, ne MAD', c.threshold_method === 'mezera mezi skupinami',
+    c.threshold_method);
+  // dobrý hlas → vysoká úroveň
+  const d = ringAnalysis(mk([-12.1, -11.8, -12.4, -12.0, -11.9, -12.2, -12.3, -11.7, -12.5, -12.0]));
+  check('dobrá hladina → úroveň profesionál', d.level === 'profesionalni', d.level);
+  check('dobrá hladina → 0 výpadků', d.dropouts.length === 0, `${d.dropouts.length}`);
 }
 
 console.log(`\n═══ VÝSLEDEK: ${pass} prošlo, ${fail} selhalo ═══`);

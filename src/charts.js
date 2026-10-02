@@ -42,24 +42,30 @@ function fmt(v, d = 1) {
 
 /* ─────────────────────────────────────────── SPR po tónech */
 
+/**
+ * Graf ringu. Osa X je ČAS v nahrávce, ne index tónu — jinak se v grafu nedá
+ * najít, kde konkrétně se ring ztrácí, a graf je k ničemu.
+ */
 export function drawSpr(canvas, notes, summary) {
   const H = 230;
   const { ctx, w, h } = setup(canvas, H);
-  const padL = 42, padR = 12, padT = 14, padB = 30;
+  const padL = 46, padR = 12, padT = 14, padB = 34;
   const plotW = w - padL - padR, plotH = h - padT - padB;
 
-  const vals = notes.map(n => n.spr).filter(v => v === v);
+  const meas = notes.filter(n => n.spr === n.spr);
+  const vals = meas.map(n => n.spr);
   if (!vals.length) {
     ctx.fillStyle = COL.textDim;
-    ctx.fillText(summary?.reason || 'SPR nelze měřit', padL, h / 2);
+    ctx.fillText(summary?.reason || 'Ring nelze měřit', padL, h / 2);
     return;
   }
   let lo = Math.min(...vals, summary.ring_threshold), hi = Math.max(...vals);
   const pad = Math.max(2, (hi - lo) * 0.12);
   lo -= pad; hi += pad;
 
-  const x = (i) => padL + (notes.length <= 1 ? plotW / 2
-    : (i / (notes.length - 1)) * plotW);
+  const t0 = 0;
+  const t1 = Math.max(...notes.map(n => n.t_end), 1);
+  const x = (t) => padL + ((t - t0) / (t1 - t0)) * plotW;
   const y = (v) => padT + plotH - ((v - lo) / (hi - lo)) * plotH;
 
   // mřížka + osa Y
@@ -73,21 +79,33 @@ export function drawSpr(canvas, notes, summary) {
   }
   ctx.fillText('dB', 6, padT - 3);
 
+  // mřížka po čase
+  ctx.fillStyle = COL.textDim;
+  const tStep = niceTicks(0, t1, 6).filter(v => v > 0);
+  for (const tv of tStep) {
+    const xx = Math.round(x(tv)) + 0.5;
+    if (xx < padL || xx > w - padR) continue;
+    ctx.strokeStyle = COL.grid;
+    ctx.beginPath(); ctx.moveTo(xx, padT); ctx.lineTo(xx, padT + plotH); ctx.stroke();
+    ctx.fillText(fmtClock(tv), xx - 12, h - padB + 14);
+  }
+
   // pásmo ringu (nad hranicí) jemně zvýraznit
   if (summary.ring_threshold > lo) {
     ctx.fillStyle = 'rgba(106,158,106,.07)';
     ctx.fillRect(padL, y(hi), plotW, y(summary.ring_threshold) - y(hi));
   }
 
-  // sloupce — u samých záporných hodnot kresli ode dna (ne od nuly, ta je mimo osu)
-  const bw = Math.max(2, Math.min(14, plotW / Math.max(1, notes.length) * 0.7));
+  // sloupce: šířka podle skutečné délky tónu, takže mezery v nahrávce jsou vidět
   const bottom = y(lo);
-  notes.forEach((n, i) => {
-    if (n.spr !== n.spr) return;
+  for (const n of meas) {
+    if (n.spr !== n.spr) continue;
+    const xa = x(n.t_start), xb = x(n.t_end);
+    const bw = Math.max(2, Math.min(18, xb - xa));
     const yy = y(n.spr);
     ctx.fillStyle = n.ring_ok ? COL.ok : COL.bad;
-    ctx.fillRect(x(i) - bw / 2, Math.min(yy, bottom), bw, Math.abs(bottom - yy));
-  });
+    ctx.fillRect(xa + (xb - xa - bw) / 2, Math.min(yy, bottom), bw, Math.abs(bottom - yy));
+  }
 
   // referenční čáry
   const refLines = [
@@ -114,18 +132,12 @@ export function drawSpr(canvas, notes, summary) {
     ctx.fillText(label, w - padR - 128, ly);
     ly += 13;
   }
+}
 
-  // osa X: popisky tónů
-  ctx.fillStyle = COL.textDim;
-  const step = Math.max(1, Math.ceil(notes.length / 18));
-  notes.forEach((n, i) => {
-    if (i % step) return;
-    ctx.save();
-    ctx.translate(x(i), h - padB + 12);
-    ctx.rotate(-Math.PI / 4);
-    ctx.fillText(n.note, 0, 0);
-    ctx.restore();
-  });
+/** mm:ss z sekund pro popisky osy. */
+function fmtClock(t) {
+  const m = Math.floor(t / 60), s = Math.round(t % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
 }
 
 /* ─────────────────────────────────────────── F1:F0 ladění */

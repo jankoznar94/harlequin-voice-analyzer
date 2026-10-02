@@ -213,7 +213,7 @@ function showResult(res, samples, sampleRate, label, secs) {
   if (s.spr_unusable) {
     $('r-unusable').classList.remove('hidden');
     $('r-unusable').innerHTML =
-      `<strong>SPR nelze měřit.</strong><br>${escapeHtml(s.reason)}<br><br>` +
+      `<strong>Ring nelze změřit.</strong><br>${escapeHtml(s.reason)}<br><br>` +
       'Nahrávka nemá dostatečné pásmo pro oblast 2–4 kHz. Typicky jde o silně ' +
       'komprimovaný zvuk (m4a, opus, telefonní záznam) nebo historickou nahrávku. ' +
       'Zkus nahrát znovu, ideálně jako WAV.';
@@ -223,38 +223,71 @@ function showResult(res, samples, sampleRate, label, secs) {
   $('r-unusable').classList.add('hidden');
   $('r-body').classList.remove('hidden');
 
-  // KPI
+  /* ── ukazatel 1: vyrovnanost ringu ─────────────────────────────────── */
   const ringPct = s.ring_consistency_pct;
   setKpi('k-ring', ringPct.toFixed(0) + ' %',
-    `${s.notes_with_ring}/${s.n_notes} ${czPlural(s.n_notes, 'tón', 'tóny', 'tónů')}`,
-    ringPct >= 95 ? 'ok' : ringPct >= 80 ? 'mid' : 'bad');
+    `${s.notes_with_ring} z ${s.n_notes} ${czPlural(s.n_notes, 'tónu', 'tónů', 'tónů')}`,
+    ringPct >= 95 ? 'ok' : ringPct >= 85 ? 'mid' : 'bad',
+    'k-ring-d',
+    ringPct >= 95
+      ? 'Na všech tónech zní barva stejně. To je cíl — ring není jen na pár povedených tónech, ale na každém.'
+      : ringPct >= 85
+        ? 'Většinou ano, ale najdou se tóny, kde se barva láme. Podívej se níž, na kterých místech to je.'
+        : 'Ring se na mnoha tónech láme. Hledej, co ty tóny mají společného — výšku, hlasitost nebo samohlásku.');
 
-  setKpi('k-spr', fmt(s.spr_median, 1), `± ${fmt(s.spr_sd, 1)} (rozptyl)`,
-    s.spr_median >= -15 ? 'ok' : s.spr_median >= -20 ? 'mid' : 'bad');
+  /* ── ukazatel 2: síla ringu (proti literatuře, orientační) ─────────── */
+  const lvl = {
+    profesionalni: ['Silný', 'ok',
+      'Tato hladina odpovídá tomu, co literatura měří u profesionálních zpěváků.'],
+    mezi: ['Střední', 'mid',
+      'Mezi nezpěváky a profesionály. Prostor na zlepšení je v hlasitosti a opoře — ' +
+      'síla ringu jde nahoru s hlasitostí, ne s tlačením na hlas.'],
+    pod_nezpevakem: ['Slabý', 'bad',
+      'Hladina je pod tím, co literatura měří i u nezpěváků. Bývá to malá hlasitost ' +
+      'nebo mikrofon daleko od úst — zkontroluj vzdálenost, než začneš soudit hlas.'],
+  }[s.level] || ['—', 'none', ''];
+  setKpi('k-level', lvl[0], `SPR ${fmt(s.spr_median, 1)} dB (medián)`, lvl[1], 'k-level-d', lvl[2]);
 
-  const fheRef = REFS.FHE[res.fach];
-  setKpi('k-fhe', s.fhe_median ? Math.round(s.fhe_median) : '—',
-    fheRef ? `ref. ${res.fach} ${fheRef[0]} Hz` : 'bez reference',
-    'none');
-
+  /* ── ukazatel 3: ladění vysokých tónů ──────────────────────────────── */
   if (s.f1_aligned_pct === null) {
-    setKpi('k-f1', '—', 'žádný tón od G4 výš', 'none');
+    setKpi('k-f1', '—', 'v nahrávce nejsou tóny od G4 výš', 'none', 'k-f1-d',
+      'Nad G4 se pozná, kde se rozpadá ladění. Bez takových tónů to hodnotit nelze — ' +
+      'zazpívej i něco vyššího.');
   } else {
-    setKpi('k-f1', s.f1_aligned_pct.toFixed(0) + ' %',
-      `z ${s.f1_tuning_notes} ${czPlural(s.f1_tuning_notes, 'tónu', 'tónů', 'tónů')} od G4`,
-      s.f1_aligned_pct >= 80 ? 'ok' : s.f1_aligned_pct >= 50 ? 'mid' : 'bad');
+    const p = s.f1_aligned_pct;
+    setKpi('k-f1', p.toFixed(0) + ' %',
+      `${czPlural(s.f1_tuning_notes, 'z 1 tónu', `ze ${s.f1_tuning_notes} tónů`, `z ${s.f1_tuning_notes} tónů`)} od G4`,
+      p >= 80 ? 'ok' : p >= 50 ? 'mid' : 'bad', 'k-f1-d',
+      p >= 80
+        ? 'První formant sedí na harmonickou tónu. Výška a barva drží spolu, tón nezní rozladěně.'
+        : p >= 50
+          ? 'Na části vysokých tónů formant nesedí na harmonickou — tón pak zní rozladěně, i když je výška správně. Pomáhá mírně upravit samohlásku.'
+          : 'Formant většinou nesedí. Na vysokých tónech se rozpadá vazba mezi výškou a barvou. To je místo pro modifikaci samohlásky.');
   }
+
+  /* ── ukazatel 4: kolik tónů se změřilo ─────────────────────────────── */
+  const total = res.notes.length + res.n_dropped;
+  setKpi('k-count', String(res.notes.length),
+    res.n_dropped ? `${res.n_dropped} vyřazeno` : 'nic nevyřazeno',
+    'none', 'k-count-d',
+    res.n_dropped
+      ? 'Vyřazené tóny ležely mimo zvolený obor, nebo to byly útržky kratší než dvě desetiny sekundy. Pro ring se nepočítají.'
+      : 'Všechny nalezené tóny ležely v oboru a měly dostatečnou délku.');
 
   // verdikt
   $('r-verdict').innerHTML = verdict(res);
 
-  // výpadky
+  // výpadky — vypiš s časem, ne jen jménem noty
   const dw = $('r-dropouts');
-  if (s.dropout_notes.length) {
+  if (s.dropouts && s.dropouts.length) {
     dw.classList.remove('hidden');
-    dw.innerHTML = `<strong>Výpadky ringu na tónech:</strong> ` +
-      `${escapeHtml(s.dropout_notes.join(', '))}. ` +
-      `To jsou místa, kde se ring ztrácí — přesně tam má smysl se vracet.`;
+    const list = s.dropouts.slice(0, 8).map(d => {
+      const m = Math.floor(d.t / 60), sec = Math.round(d.t % 60);
+      return `${escapeHtml(d.note)} v ${m}:${String(sec).padStart(2, '0')}`;
+    }).join(', ');
+    const more = s.dropouts.length > 8 ? ` a další ${s.dropouts.length - 8}` : '';
+    dw.innerHTML = `<strong>${s.dropouts.length} ${czPlural(s.dropouts.length, 'tón', 'tóny', 'tónů')}, kde ring nedrží:</strong> ` +
+      `${list}${more}. To jsou přesná místa v nahrávce, kam se vrátit.`;
   } else {
     dw.classList.add('hidden');
   }
@@ -278,31 +311,45 @@ function showResult(res, samples, sampleRate, label, secs) {
       if (cls) td.className = cls;
       return td;
     };
-    tr.append(
-      cell(n.idx),
-      Object.assign(document.createElement('td'), { textContent: n.note }),
-      cell(n.f0, 1),
-      cell(n.dur, 2),
-      cell(n.spr, 1),
-    );
     const ring = document.createElement('td');
     ring.textContent = n.ring_ok ? 'ANO' : 'NE';
     ring.className = n.ring_ok ? 'ok' : 'bad';
-    tr.append(ring, cell(n.f1), cell(n.f2),
+    tr.append(
+      cell(n.idx),
+      Object.assign(document.createElement('td'), { textContent: n.note }),
+      Object.assign(document.createElement('td'), { textContent: fmtTime(n.t_start) }),
+      cell(n.f0, 1),
+      cell(n.dur, 2),
+      cell(n.spr, 1),
+      ring,
+      cell(n.f1),
+      cell(n.f2),
       cell(n.f1_f0_err_pct, 1),
       cell(n.hnr, 1),
-      cell(n.vib_rate, 1));
+      cell(n.vib_rate, 1),
+    );
     tb.append(tr);
   }
 
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-function setKpi(id, value, sub, cls) {
+/** mm:ss z sekund. */
+function fmtTime(t) {
+  if (!(t >= 0)) return '—';
+  const m = Math.floor(t / 60), s = Math.floor(t % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function setKpi(id, value, sub, cls, descId, desc) {
   const el = $(id);
   el.textContent = value;
   el.className = 'kpi-v' + (cls && cls !== 'none' ? ' ' + cls : '');
   $(id + '-s').textContent = sub;
+  if (descId) {
+    const d = $(descId);
+    if (d) d.textContent = desc || '';
+  }
 }
 
 function verdict(res) {
@@ -310,40 +357,32 @@ function verdict(res) {
   const parts = [];
   const ringPct = s.ring_consistency_pct;
 
+  // 1) je ring rovnoměrný?
   if (ringPct >= 95) {
-    parts.push(`<strong>Ring drží na ${ringPct.toFixed(0)} % tónů.</strong> ` +
-      'To je přesně ten cíl — všudypřítomný ring, ne jen na pár dobrých tónech.');
-  } else if (ringPct >= 80) {
-    parts.push(`<strong>Ring drží na ${ringPct.toFixed(0)} % tónů.</strong> ` +
-      'Většinou ano, ale najdou se místa, kde se ztrácí — viz výpady níž.');
+    parts.push('<strong>Ring drží na každém tónu.</strong> ');
+  } else if (ringPct >= 85) {
+    parts.push(`<strong>Ring drží na ${ringPct.toFixed(0)} % tónů.</strong> `);
   } else {
-    parts.push(`<strong>Ring je přítomný jen na ${ringPct.toFixed(0)} % tónů.</strong> ` +
-      'Není všudypřítomný — hledej, co mají výpadky společného (výška, samohláska).');
+    parts.push(`<strong>Ring se láme na ${(100 - ringPct).toFixed(0)} % tónů.</strong> `);
   }
 
-  if (s.spr_median >= -13.1) {
-    parts.push(`Medián SPR ${fmt(s.spr_median, 1)} dB je v pásmu profesionálů ` +
-      '(−13,1 dB).');
-  } else if (s.spr_median >= -20) {
-    parts.push(`Medián SPR ${fmt(s.spr_median, 1)} dB je lepší než nezpěváci ` +
-      '(−22,7 dB), ale pod profesionály (−13,1 dB).');
-  } else {
-    parts.push(`Medián SPR ${fmt(s.spr_median, 1)} dB je v pásmu nezpěváků ` +
-      '(−22,7 dB).');
-  }
+  // 2) je ta hladina vůbec dobrá? (jiná otázka než 1)
+  const lvlText = {
+    profesionalni: 'Síla ringu odpovídá profesionálům.',
+    mezi: 'Síla ringu je mezi nezpěváky a profesionály — prostor je v opoře a hlasitosti.',
+    pod_nezpevakem: 'Síla ringu je pod úrovní nezpěváků. Nejdřív zkontroluj vzdálenost mikrofonu a hlasitost.',
+  }[s.level] || '';
+  parts.push(lvlText);
 
-  if (s.spr_sd > 6) {
-    parts.push(`Rozptyl je ale vysoký (± ${fmt(s.spr_sd, 1)} dB) — ` +
-      'ring není stabilní, jednou je a jednou ne.');
+  if (s.dropouts && s.dropouts.length) {
+    parts.push(`Vrátit se na ${s.dropouts.length} ${czPlural(s.dropouts.length, 'místo', 'místa', 'míst')} — najdeš ${czPlural(s.dropouts.length, 'ho', 'je', 'je')} v grafu níž podle času.`);
   }
 
   if (s.f1_aligned_pct !== null && s.f1_aligned_pct < 60) {
-    parts.push(`Nad G4 se první formant trefuje jen v ${s.f1_aligned_pct.toFixed(0)} % — ` +
-      'tam se rozpadá ladění. To je místo pro modifikaci samohlásky.');
+    parts.push(`Nad G4 se první formant trefuje jen v ${s.f1_aligned_pct.toFixed(0)} % — tam se rozpadá ladění. To je místo pro modifikaci samohlásky.`);
   }
 
-  parts.push('<em>Připomínka: absolutní hodnoty jsou srovnatelné jen stejným ' +
-    'mikrofonem a vzdáleností. Rozdíly pod 2 dB nejsou signál.</em>');
+  parts.push('<em>Srovnávej jen sám sebe, stejným mikrofonem a vzdáleností. Rozdíly pod 2 dB nejsou signál.</em>');
   return parts.join(' ');
 }
 
@@ -439,24 +478,29 @@ function makeMarkdown() {
   L.push(`# Analýza: ${current.label}`, '');
   L.push(`${d.toLocaleString('cs-CZ')} · ${r.duration_s.toFixed(1)} s · ` +
     `${r.notes.length} tónů · obor ${r.fach}`, '');
-  L.push('## Ring konzistence');
+  L.push('## Ring');
   if (s.spr_unusable) {
-    L.push(`**SPR nelze měřit:** ${s.reason}`);
+    L.push(`**Ring nelze měřit:** ${s.reason}`);
   } else {
-    L.push(`- Tónů s ringem: **${s.notes_with_ring}/${s.n_notes}** (${s.ring_consistency_pct.toFixed(1)} %)`);
-    L.push(`- SPR medián **${fmt(s.spr_median, 2)} dB**, rozptyl ± ${fmt(s.spr_sd, 2)} dB`);
-    L.push(`- Rozsah ${fmt(s.spr_min, 1)} až ${fmt(s.spr_max, 1)} dB`);
-    if (s.dropout_notes.length) L.push(`- **Výpadky na tónech: ${s.dropout_notes.join(', ')}**`);
-    else L.push('- Beze výpadků.');
+    L.push(`- Vyrovnanost: **${s.notes_with_ring}/${s.n_notes}** tónů ` +
+      `(${s.ring_consistency_pct.toFixed(1)} %) — na kolika tónech se barva neláme`);
+    L.push(`- Úroveň (proti literatuře): **${s.level}**, SPR medián **${fmt(s.spr_median, 2)} dB** ` +
+      `(${s.pct_above_ref.toFixed(0)} % tónů nad ${s.ref_threshold} dB)`);
+    L.push(`- Rozptyl ± ${fmt(s.spr_sd, 2)} dB, rozsah ${fmt(s.spr_min, 1)} až ${fmt(s.spr_max, 1)} dB`);
+    L.push(`- Práh výpadku ${fmt(s.ring_threshold, 1)} dB (${s.threshold_method})`);
+    if (s.dropouts.length) {
+      const list = s.dropouts.map(x => `${x.note} v ${fmtTime(x.t)}`).join(', ');
+      L.push(`- **Výpadky (${s.dropouts.length}): ${list}**`);
+    } else L.push('- Beze výpadků.');
     L.push(`- FHE (barva hlasu): ${s.fhe_median ? Math.round(s.fhe_median) : '—'} Hz`);
-    L.push(`- F1 laděno: ${s.f1_aligned_pct === null ? '—' : s.f1_aligned_pct.toFixed(1) + ' %'}`);
+    L.push(`- Ladění od G4: ${s.f1_aligned_pct === null ? '—' : s.f1_aligned_pct.toFixed(1) + ' %'}`);
   }
   L.push('', '## Po tónech', '');
-  L.push('| # | tón | f0 Hz | délka | SPR dB | ring | F1 | F2 | F1:F0 % | HNR | vibr. Hz |');
-  L.push('|---|---|---|---|---|---|---|---|---|---|---|');
+  L.push('| # | tón | čas | f0 Hz | délka | SPR dB | ring | F1 | F2 | F1:F0 % | HNR | vibr. Hz |');
+  L.push('|---|---|---|---|---|---|---|---|---|---|---|---|');
   for (const n of r.notes) {
     const v = (x, d2 = 0) => (x === x && x !== null ? (d2 ? x.toFixed(d2) : Math.round(x)) : '—');
-    L.push(`| ${n.idx} | ${n.note} | ${v(n.f0, 1)} | ${v(n.dur, 2)} | ${v(n.spr, 1)} | ` +
+    L.push(`| ${n.idx} | ${n.note} | ${fmtTime(n.t_start)} | ${v(n.f0, 1)} | ${v(n.dur, 2)} | ${v(n.spr, 1)} | ` +
       `${n.ring_ok ? 'ANO' : 'NE'} | ${v(n.f1)} | ${v(n.f2)} | ${v(n.f1_f0_err_pct, 1)} | ` +
       `${v(n.hnr, 1)} | ${v(n.vib_rate, 1)} |`);
   }
@@ -464,6 +508,8 @@ function makeMarkdown() {
   L.push('- Absolutní hodnoty závisí na mikrofonu, vzdálenosti a ekvalizaci nahrávky. ' +
     'Srovnatelné je jen měření stejným řetězcem.');
   L.push('- Rozdíly menší než 2 dB nejsou signál.');
+  L.push('- Vyrovnanost a úroveň jsou dvě různé věci: rovnoměrně slabý hlas má ' +
+    'vyrovnanost vysokou, ale úroveň nízkou.');
   L.push('- Z mikrofonu nelze měřit subglotický tlak, míru dovření hlasivek ani polohu hrtanu.');
   return L.join('\n');
 }

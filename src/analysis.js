@@ -339,6 +339,115 @@ export function czPlural(n, one, few, many) {
   return many;
 }
 
+/**
+ * Rozdělí konturu na notové úseky (plateau) — hysterezní detektor se ukotvenou notou.
+ *
+ * PROČ TAKHLE:
+ *  - Jediný práh nestačí. Nota, která mírně klesá nebo má vibrato, vypadne ze
+ *    svého pásma a založí falešný nový tón. Proto je práh pro VSTUP do nové noty
+ *    (enterCents) jiný než práh pro UDRŽENÍ (stayCents) a ukotvení drží na
+ *    začátku noty, ne na klouzavém průměru — průměr rozmazává hranice a legato
+ *    stupnici slije do jedné noty.
+ *  - Změna noty se uzná, jen když se nová výška UDRŽÍ aspoň minChange sekundy.
+ *    Krátký zákmyt (přechodové zaškobrtnutí YINu) notu nerozdělí.
+ *  - Sousední úseky dělené drobným krokem (< glissandoCents) se slijí — pomalý
+ *    klouzavý přechod je jeden tón, ne dvanáct.
+ *
+ * @returns {t0, t1, f0, cents, spanCents, isGlide, frames}[]
+ */
+export function countNotePlateaus(times, f0, opts = {}) {
+  const enter = opts.enterCents ?? 70;        // skok, který znamená novou notu
+  const stay = opts.stayCents ?? 50;          // dokud se nota drží v tomto pásmu, je jedna
+  const minDur = opts.minDur ?? 0.22;         // kratší úseky se nezapočítají
+  const minChange = opts.minChange ?? 0.055;  // jak dlouho musí nová výška vydržet
+  const mergeGap = opts.mergeGap ?? 0.06;     // kratší pauza notu nerozdělí
+  const glideCents = opts.glissandoCents ?? 40; // menší krok mezi úseky = klouzavý přechod
+  const anchorFrames = opts.anchorFrames ?? 5;
+  const glideSpan = opts.glideSpanCents ?? 150;
+
+  const n = f0.length;
+  const cents = new Float64Array(n);
+  for (let i = 0; i < n; i++) cents[i] = f0[i] > 0 ? hzToCents(f0[i]) : NaN;
+
+  const runs = [];
+  let i = 0;
+  while (i < n) {
+    if (!(f0[i] > 0)) { i++; continue; }
+    // ukotvení noty: medián z prvních několika znělých rámců
+    const head = [];
+    for (let k = i; k < Math.min(n, i + anchorFrames * 3) && head.length < anchorFrames; k++) {
+      if (f0[k] > 0) head.push(cents[k]);
+    }
+    head.sort((a, b) => a - b);
+    const anchor = head[head.length >> 1];
+
+    let lastGood = i;
+    let k = i + 1;
+    while (k < n) {
+      if (!(f0[k] > 0)) {
+        // pauza: krátkou přeskoč, delší ukonči úsek
+        let m = k;
+        while (m < n && !(f0[m] > 0) && times[m] - times[k - 1] < mergeGap) m++;
+        if (m < n && f0[m] > 0 && times[m] - times[k - 1] < mergeGap) { k = m; continue; }
+        break;
+      }
+      if (Math.abs(cents[k] - anchor) <= stay) { lastGood = k; k++; continue; }
+      // kandidát na novou notu — musí vydržet
+      let m = k;
+      while (m < n && f0[m] > 0 && Math.abs(cents[m] - anchor) > stay) m++;
+      const persist = (m - 1 > k) ? times[m - 1] - times[k] : 0;
+      if (persist >= minChange) {
+        const cand = [];
+        for (let q = k; q < m; q++) cand.push(cents[q]);
+        cand.sort((a, b) => a - b);
+        if (Math.abs(cand[cand.length >> 1] - anchor) >= enter) break;   // opravdu nová nota
+      }
+      lastGood = Math.min(n - 1, m - 1);
+      k = m;
+    }
+    const t0 = times[i], t1 = times[lastGood];
+    if (t1 > t0) {
+      const vals = [];
+      for (let q = i; q <= lastGood; q++) if (f0[q] > 0) vals.push(cents[q]);
+      if (vals.length) {
+        vals.sort((a, b) => a - b);
+        runs.push({
+          t0, t1, cents: vals[vals.length >> 1],
+          spanCents: vals[vals.length - 1] - vals[0],
+          frames: vals.length,
+        });
+      }
+    }
+    // posun na další notu (přeskoč mezery)
+    let nx = lastGood + 1;
+    while (nx < n && !(f0[nx] > 0)) nx++;
+    i = Math.max(nx, lastGood + 1);
+  }
+
+  // Slij sousední úseky, které dělí jen drobný krok — to je klouzavý přechod,
+  // ne nová nota. (Stupnice dělá kroky ~200 centů, glissando ~40.)
+  const merged = [];
+  for (const r of runs) {
+    const p = merged[merged.length - 1];
+    if (p && r.t0 - p.t1 <= mergeGap && Math.abs(r.cents - p.cents) < glideCents) {
+      const a = p.t0, b = r.t1;
+      p.t1 = b;
+      p.cents = (p.cents * p.frames + r.cents * r.frames) / (p.frames + r.frames);
+      p.frames += r.frames;
+      p.spanCents = r.spanCents + Math.abs(r.cents - p.cents);
+      p.isGlide = p.spanCents > glideSpan;
+    } else merged.push({ ...r });
+  }
+
+  return merged
+    .filter(r => r.t1 - r.t0 >= minDur)
+    .map(r => ({
+      t0: r.t0, t1: r.t1, f0: Math.pow(2, r.cents / 1200) * 440,
+      cents: r.cents, spanCents: r.spanCents,
+      isGlide: !!r.isGlide || r.spanCents > glideSpan, frames: r.frames,
+    }));
+}
+
 /** Rozdělí f0 konturu na tónové události (stejná logika jako Python verze). */
 export function segmentNotes(times, f0raw, opts = {}) {
   const tolCents = opts.tolCents ?? 120;
@@ -661,6 +770,11 @@ export const REFS = {
     zdroj: 'Nature Sci Rep 2022, n=1723 vzorků profesionálních zpěváků',
   },
   SPR_ring_threshold: -20.0,
+  // Jak daleko pod vlastním mediánem SPR se tón počítá jako výpadek ringu.
+  // 2,5×MAD je citlivější, 4×MAD shovívavější. Na měřených datech (Janova
+  // nahrávka, Caruso 1902) dává stejný verdikt 2,5 i 4,0 — rozhoduje medián,
+  // ne konstanta. Držíme literaturu (Robust statistics: 2,5×MAD ≈ 3σ).
+  SPR_dropout_k: 2.5,
   F1_align_tol_pct: 8.0,
   F1_tuning_from_hz: 392.0,
   F1_tuning_from_note: 'G4',
@@ -704,7 +818,12 @@ export function analyze(samples, sampleRate, opts = {}) {
   const { times, f0 } = pitchTrack(samples, sampleRate);
   progress(0.35, 'Dělím nahrávku na tóny…');
 
-  let spans = segmentNotes(times, f0, { minDur });
+  // Segmentace: hysterezní čítač s ukotvenou notou. Nahradil starou segmentaci,
+  // která na legatu a rychlých pasážích slévala noty do jedné (8 not → 1 tón,
+  // 16 not → 1 tón) a na skocích přes oktávu je naopak ztrácela. Detaily v
+  // countNotePlateaus().
+  const sm = medianFilter(f0, 15);
+  const plateaus = countNotePlateaus(times, sm, { minDur: opts.minDur ?? 0.22 });
 
   // filtr rozsahu: orchestr/doprovod často leze mimo obor hlasu
   const [lo, hi] = REFS.fach_ranges[fach] || REFS.fach_ranges.tenor;
@@ -712,29 +831,29 @@ export function analyze(samples, sampleRate, opts = {}) {
   const hiF = opts.maxFreq ?? hi;
   const dropped = [];
   const kept = [];
-  for (const [t0, t1] of spans) {
-    let med = -1;
-    const v = [];
-    for (let i = 0; i < times.length; i++) {
-      if (times[i] >= t0 && times[i] <= t1 && f0[i] > 0) v.push(f0[i]);
-    }
-    if (v.length) { v.sort((a, b) => a - b); med = v[v.length >> 1]; }
-    if (med <= 0) { dropped.push({ t0, t1, why: 'bez f0' }); continue; }
-    if (t1 - t0 > maxDur) dropped.push({ t0, t1, why: `příliš dlouhé (${(t1 - t0).toFixed(1)} s)` });
-    else if (med < loF || med > hiF) dropped.push({ t0, t1, why: `${hzToNote(med)} mimo ${fach}` });
-    else kept.push([t0, t1]);
+  for (const p of plateaus) {
+    const med = p.f0;
+    if (!(med > 0)) { dropped.push({ t0: p.t0, t1: p.t1, why: 'bez f0' }); continue; }
+    if (p.t1 - p.t0 > maxDur) dropped.push({ t0: p.t0, t1: p.t1, why: `příliš dlouhé (${(p.t1 - p.t0).toFixed(1)} s)` });
+    else if (med < loF || med > hiF) dropped.push({ t0: p.t0, t1: p.t1, why: `${hzToNote(med)} mimo ${fach}` });
+    else kept.push(p);
   }
-  spans = kept;
 
-  progress(0.45, `Měřím ${spans.length} tónů…`);
+  progress(0.45, `Měřím ${kept.length} tónů…`);
 
   const notes = [];
-  for (let i = 0; i < spans.length; i++) {
-    const [t0, t1] = spans[i];
-    const nm = measureNote(samples, sampleRate, times, f0, i + 1, t0, t1, band);
-    if (nm) notes.push(nm);
-    if (i % 10 === 0) progress(0.45 + 0.45 * (i / Math.max(1, spans.length)),
-      `Měřím tón ${i + 1}/${spans.length}…`);
+  for (let i = 0; i < kept.length; i++) {
+    const p = kept[i];
+    const nm = measureNote(samples, sampleRate, times, f0, i + 1, p.t0, p.t1, band);
+    if (nm) {
+      // rozkmit noty: u velkého rozkmitu (klouzavý přechod, rozpad tónu) se
+      // měřené číslo týká něčeho jiného než „drženého tónu" — ať to UI přizná
+      nm.span_cents = p.spanCents;
+      nm.is_glide = p.isGlide;
+      notes.push(nm);
+    }
+    if (i % 10 === 0) progress(0.45 + 0.45 * (i / Math.max(1, kept.length)),
+      `Měřím tón ${i + 1}/${kept.length}…`);
   }
 
   progress(0.92, 'Vyhodnocuji ring…');
@@ -824,7 +943,52 @@ function measureNote(samples, sampleRate, times, f0raw, idx, t0, t1, band) {
   };
 }
 
-/** Ring musí být všudypřítomný → hledá výpadky proti vlastnímu mediánu. */
+/**
+ * Najde dělící mez ve vzorku hodnot: pokud jsou hodnoty dvouhroté (skupina
+ * s ringem a skupina bez), vrátí střed největší mezery. Jinak null.
+ *
+ * PROČ JE POTŘEBA: medián ± k·MAD selže přesně tehdy, když je tónů bez ringu
+ * asi polovina — rozptyl se vyrovná vzdálenosti skupin a práh spadne POD tu
+ * špatnou skupinu, takže se nenajde žádný výpadok. Ověřeno na syntetice:
+ * 5 tónů bez ringu z 10 hlasilo 0 výpadků. Dvouhroté rozdělení se proto
+ * hledá zvlášť podle největší mezery v setříděných hodnotách.
+ */
+export function gapSplit(values) {
+  const v = [...values].sort((a, b) => a - b);
+  const n = v.length;
+  if (n < 6) return null;
+  const i0 = Math.floor(n * 0.12);          // ignoruj okrajové odlehlé hodnoty
+  const i1 = Math.ceil(n * 0.88);
+  let bestGap = 0, bestAt = -1;
+  for (let i = i0; i < i1 - 1; i++) {
+    const g = v[i + 1] - v[i];
+    if (g > bestGap) { bestGap = g; bestAt = i; }
+  }
+  if (bestAt < 0) return null;
+  const lower = bestAt + 1;                  // kolik hodnot leží pod mezerou
+  const share = lower / n;
+  // Mezera musí být zřetelná a menšinová skupina nesmí být ani titěrná, ani většinová
+  if (bestGap < 3.0 || share < 0.12 || share > 0.75) return null;
+  return { cut: (v[bestAt] + v[bestAt + 1]) / 2, gap: bestGap, lower, n };
+}
+
+/**
+ * Vyhodnocení ringu.
+ *
+ * PŮVODNÍ CHYBA (měřeno, opraveno): `ring_ok` se počítalo jako
+ * `spr >= max(vlastní práh, −20 dB)`. Tím se absolutní literární mez pro
+ * NEZPĚVÁKY (Omori 1996) používala jako verdikt „má / nemá ring". Jenže na
+ * běžné nahrávce leží medián SPR okolo −19 dB, tedy TĚSNĚ pod tou mezí —
+ * takže takové hodnocení nutně rozpůlí sadu a hlásí „50 % tónů bez ringu",
+ * i když jsou všechny tóny stejné. A protože SPR koreluje s hlasitostí
+ * (na Janově nahrávce r = 0,72), propadnou hlavně tiché tóny.
+ *
+ * SPRÁVNĚ se vyhodnocují DVĚ věci odděleně, protože to jsou různé otázky:
+ *   1) VYROVNANOST — je ring na každém tónu? (vlastní medián, hledání výpadků)
+ *   2) ÚROVEŇ — je ta hladina vůbec dobrá? (srovnání s literaturou)
+ * Rovnoměrně špatný hlas má vyrovnanost 100 % a úroveň špatnou. Rovnoměrně
+ * dobrý má obojí dobré. To se musí hlásit zvlášť, jinak metrika lže.
+ */
 export function ringAnalysis(notes) {
   const usable = notes.filter(n => n.spr_valid && n.spr === n.spr);
   if (!usable.length) {
@@ -840,19 +1004,33 @@ export function ringAnalysis(notes) {
   const dev = s.map(v => Math.abs(v - med)).sort((a, b) => a - b);
   const mad = dev.length & 1 ? dev[dev.length >> 1]
     : (dev[(dev.length >> 1) - 1] + dev[dev.length >> 1]) / 2;
-  const thr = med - Math.max(3.0, 2.5 * 1.4826 * mad);
+
+  // Práh výpadku: dvouhroté rozdělení se řeší mezerou, jednohroté mediánem ± k·MAD.
+  const split = gapSplit(s);
+  const thr = split ? split.cut : med - Math.max(3.0, REFS.SPR_dropout_k * 1.4826 * mad);
+  const method = split ? 'mezera mezi skupinami' : 'medián − k·MAD';
 
   for (const n of usable) {
-    n.ring_ok = n.spr >= Math.max(thr, REFS.SPR_ring_threshold);
-    n.ring_dropout = n.spr < thr;
+    n.ring_ok = n.spr >= thr;                              // vyrovnaný tón
+    n.ring_dropout = n.spr < thr;                          // proti vlastnímu mediánu
+    n.ring_above_ref = n.spr >= REFS.SPR_ring_threshold;    // orientačně vs. literatura
   }
   const good = usable.filter(n => n.ring_ok).length;
+  const aboveRef = usable.filter(n => n.ring_above_ref).length;
   const mean = s.reduce((a, b) => a + b, 0) / s.length;
   const sd = Math.sqrt(s.reduce((a, v) => a + (v - mean) ** 2, 0) / s.length);
+
+  // výpadky: vypiš i s časem, ne jen jméno noty — jinak se v nahrávce nedá najít
+  const dropouts = usable.filter(n => n.ring_dropout)
+    .map(n => ({ note: n.note, t: n.t_start, spr: n.spr, dur: n.dur, spl: n.spl_dbfs }));
 
   const rel = usable.filter(n => n.f1_tuning_relevant && n.f1_f0_err_pct === n.f1_f0_err_pct);
   const fhes = usable.map(n => n.fhe).filter(v => v === v).sort((a, b) => a - b);
   const bands = usable.map(n => n.bandwidth_hz).filter(v => v === v).sort((a, b) => a - b);
+
+  // Úroveň: kde je nahrávka proti literatuře (orientačně, ne verdikt).
+  const [refNezpevak, refProf] = [REFS.SPR.nezpevak[0], REFS.SPR.profesional[0]];
+  const level = med >= refProf ? 'profesionalni' : med >= refNezpevak ? 'mezi' : 'pod_nezpevakem';
 
   return {
     spr_unusable: false,
@@ -864,10 +1042,18 @@ export function ringAnalysis(notes) {
     spr_sd: sd,
     spr_min: s[0], spr_max: s[s.length - 1],
     ring_threshold: thr,
+    threshold_method: method,
+    bimodal: !!split,
+    split_gap_db: split ? split.gap : null,
     notes_with_ring: good,
     notes_missing_ring: usable.length - good,
     ring_consistency_pct: 100 * good / usable.length,
-    dropout_notes: [...new Set(usable.filter(n => n.ring_dropout).map(n => n.note))].sort(),
+    dropout_notes: [...new Set(dropouts.map(d => d.note))].sort(),
+    dropouts,
+    // orientační srovnání s literaturou — NENÍ to verdikt
+    pct_above_ref: 100 * aboveRef / usable.length,
+    ref_threshold: REFS.SPR_ring_threshold,
+    level,
     f1_tuning_notes: rel.length,
     f1_aligned_pct: rel.length ? 100 * rel.filter(n => n.f1_tuned).length / rel.length : null,
     fhe_median: fhes.length ? fhes[fhes.length >> 1] : null,
