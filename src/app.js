@@ -110,14 +110,14 @@ async function handleBlob(blob, label) {
     const audio = await ctx.decodeAudioData(ab.slice(0));
     await ctx.close();
     const mono = toMono(audio);
-    runAnalysis(mono, audio.sampleRate, label);
+    runAnalysis(mono, audio.sampleRate, label, blob);
   } catch (e) {
     console.error(e);
     // fallback: MediaRecorder často vyrobí webm/opus, který decodeAudioData
     // v některých prohlížečích nepřečte — zkus přes <audio> element
     try {
       const mono = await decodeViaElement(blob);
-      if (mono) return runAnalysis(mono.samples, mono.sampleRate, label);
+      if (mono) return runAnalysis(mono.samples, mono.sampleRate, label, blob);
     } catch (e2) { console.error(e2); }
     alert('Zvuk se nepodařilo přečíst. Zkus nahrát ve formátu WAV, nebo použij ' +
       '"Načíst soubor".');
@@ -155,7 +155,7 @@ async function decodeViaElement(blob) {
 
 /* ═══════════════════════════════════════ analýza */
 
-function runAnalysis(samples, sampleRate, label) {
+function runAnalysis(samples, sampleRate, label, blob) {
   cancelled = false;
   const fach = $('fach').value;
   showProgress(0.05, 'Spouštím analýzu…');
