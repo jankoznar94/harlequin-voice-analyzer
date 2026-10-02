@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Hlas">
-<link rel="stylesheet" href="src/style.css?v=3">
+<link rel="stylesheet" href="src/style.css?v=4">
 </head>
 <body>
 
@@ -27,7 +27,7 @@
   <!-- ─────────── VSTUP ─────────── -->
   <section id="panel-input" class="panel">
     <div class="row">
-      <label for="fach">Hlasový obor</label>
+      <label for="fach">Rozsah nahrávky</label>
       <select id="fach">
         <option value="tenor" selected>Tenor (C3–E5)</option>
         <option value="baryton">Baryton (G2–B4)</option>
@@ -37,8 +37,10 @@
         <option value="vse">Bez filtru (vše)</option>
       </select>
     </div>
-    <p class="hint" id="fach-hint">Tóny mimo obor se vyřadí — brání tomu, aby analýza
-       chytala doprovod nebo orchestr.</p>
+    <p class="hint" id="fach-hint">Vyber rozsah, ve kterém se nahrávka pohybuje —
+       ne podle toho, jaký jsi obor. Tóny mimo rozsah se vyřadí, aby analýza
+       nechytala doprovod nebo orchestr. Baritonová transpozice árie se tedy
+       měří jako tenor, pokud tóny leží v tenorovém rozsahu.</p>
 
     <div class="actions">
       <button id="btn-record" class="btn primary" type="button">Nahrávat</button>
@@ -212,6 +214,6 @@
   <p><button id="btn-clear" class="link" type="button">Smazat všechna uložená data</button></p>
 </footer>
 
-<script type="module" src="src/app.js?v=3"></script>
+<script type="module" src="src/app.js?v=4"></script>
 </body>
 </html>

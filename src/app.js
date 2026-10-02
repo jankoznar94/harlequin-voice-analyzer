@@ -266,13 +266,15 @@ function showResult(res, samples, sampleRate, label, secs) {
   }
 
   /* ── ukazatel 4: kolik tónů se změřilo ─────────────────────────────── */
-  const total = res.notes.length + res.n_dropped;
-  setKpi('k-count', String(res.notes.length),
-    res.n_dropped ? `${res.n_dropped} vyřazeno` : 'nic nevyřazeno',
+  const exc = [];
+  if (s.n_excluded_short) exc.push(`${s.n_excluded_short} ${czPlural(s.n_excluded_short, 'útržek', 'útržky', 'útržků')} pod ${s.min_dur_used.toFixed(2)} s`);
+  if (s.n_excluded_quiet) exc.push(`${s.n_excluded_quiet} příliš tichých`);
+  setKpi('k-count', String(s.n_notes),
+    exc.length ? `${exc.join(' a ')} vyřazeno` : 'vše měřitelné',
     'none', 'k-count-d',
-    res.n_dropped
-      ? 'Vyřazené tóny ležely mimo zvolený obor, nebo to byly útržky kratší než dvě desetiny sekundy. Pro ring se nepočítají.'
-      : 'Všechny nalezené tóny ležely v oboru a měly dostatečnou délku.');
+    exc.length
+      ? 'Vyřazené tóny byly tak krátké nebo tak tiché, že se z nich barva hlasu změřit nedá — na takových by „výpadek ringu" nic neznamenal. Nejde o chybu ve zpěvu.'
+      : 'Všechny nalezené tóny měly dostatečnou délku i hlasitost, takže se z nich barva hlasu změřit dá.');
 
   // verdikt
   $('r-verdict').innerHTML = verdict(res);
@@ -493,6 +495,11 @@ function makeMarkdown() {
       L.push(`- **Výpadky (${s.dropouts.length}): ${list}**`);
     } else L.push('- Beze výpadků.');
     L.push(`- FHE (barva hlasu): ${s.fhe_median ? Math.round(s.fhe_median) : '—'} Hz`);
+    if (s.fhe_median && res.fach === 'tenor' && s.fhe_median < 2480) {
+      L.push('  (Pozor: referenční hodnota pro tenor je 2705 ± 221 Hz. Nižší ' +
+        'naměřená hodnota u nahrávky v nízké — např. baritonové — poloze není ' +
+        'vada hlasu, jen se na tóny v této poloze reference nevztahuje.)');
+    }
     L.push(`- Ladění od G4: ${s.f1_aligned_pct === null ? '—' : s.f1_aligned_pct.toFixed(1) + ' %'}`);
   }
   L.push('', '## Po tónech', '');
@@ -551,8 +558,9 @@ function init() {
   $('fach').onchange = () => {
     const [lo, hi] = REFS.fach_ranges[$('fach').value];
     $('fach-hint').textContent =
-      `Tóny mimo rozsah ${lo.toFixed(0)}–${hi.toFixed(0)} Hz se vyřadí — brání tomu, ` +
-      'aby analýza chytala doprovod nebo orchestr.';
+      `Tóny mimo rozsah ${lo.toFixed(0)}–${hi.toFixed(0)} Hz se vyřadí — analýza pak ` +
+      'nechytá doprovod ani orchestr. Vyber podle toho, kde nahrávka leží, ' +
+      'ne podle svého oboru.';
   };
 
   renderHist();

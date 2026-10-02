@@ -92,15 +92,29 @@ check('všechny tóny mají konzistentní data', !badNote, badNote || '');
 // 4) součet ring/nering sedí
 const s = res.summary;
 if (!s.spr_unusable) {
-  const counted = res.notes.filter(n => n.spr_valid && n.spr === n.spr).length;
-  check('n_notes odpovídá měřitelným tónům', counted === s.n_notes,
-    `${counted} vs ${s.n_notes}`);
+  // n_notes = tóny POUŽITÉ pro ring (po vyřazení krátkých/tichých)
+  // n_notes_total = všechny nalezené tóny
+  const withSpr = res.notes.filter(n => n.spr_valid && n.spr === n.spr).length;
+  check('n_notes_total odpovídá tónům s platným SPR', withSpr === s.n_notes_total,
+    `${withSpr} vs ${s.n_notes_total}`);
+  check('n_notes <= n_notes_total (filtr jen ubírá)', s.n_notes <= s.n_notes_total,
+    `${s.n_notes} vs ${s.n_notes_total}`);
+  check('vyřazené tóny sedí (krátké + tiché + ostatní)',
+    s.n_notes_excluded === (s.n_excluded_short || 0) + (s.n_excluded_quiet || 0)
+      + (s.n_notes_total - s.n_notes - (s.n_excluded_short || 0) - (s.n_excluded_quiet || 0)),
+    `vyřazeno ${s.n_notes_excluded}, krátké ${s.n_excluded_short}, tiché ${s.n_excluded_quiet}`);
   check('ring + výpadky = měřitelné', s.notes_with_ring + s.notes_missing_ring === s.n_notes,
     `${s.notes_with_ring}+${s.notes_missing_ring} vs ${s.n_notes}`);
   check('ring je 0-100 %', s.ring_consistency_pct >= 0 && s.ring_consistency_pct <= 100,
     s.ring_consistency_pct.toFixed(1) + ' %');
   check('SPR min <= medián <= max',
     s.spr_min <= s.spr_median && s.spr_median <= s.spr_max);
+  // filtr nesmí sebrat většinu sady (jinak by zahodil důkazy)
+  if (s.filter_applied) {
+    check('filtr neukrojil většinu měřitelných tónů',
+      s.n_notes >= 0.4 * s.n_notes_total,
+      `${s.n_notes} z ${s.n_notes_total}`);
+  }
 }
 
 // 5) markdown se sestaví (jako v app.js)

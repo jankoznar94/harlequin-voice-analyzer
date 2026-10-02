@@ -392,6 +392,64 @@ console.log('\n═══ 12. Vyhodnocení ringu (regrese) ═══');
   check('dobrá hladina → 0 výpadků', d.dropouts.length === 0, `${d.dropouts.length}`);
 }
 
+console.log('\n═══ 13. Krátké a tiché tóny se nehodnotí (regrese) ═══');
+{
+  // REÁLNÁ CHYBA, která se nesmí vrátit: na árii bez doprovodu vyšly jako
+  // „výpadky ringu" čtyři útržky dlouhé 0,23–0,33 s s hlasitostí 25–39 dB pod
+  // úrovní zpěvu. Ring na nich nemohl být měřitelný — nešlo o ztrátu ringu,
+  // ale o nedostatek vzorku. Uživatel by hledal problém, který neexistuje.
+  const mk2 = (spr, dur, spl) => ({
+    idx: 0, note: 'X', t_start: 0, dur, spl_dbfs: spl,
+    spr, spr_valid: true, f1_tuning_relevant: false, f1_f0_err_pct: NaN,
+    fhe: 2500, bandwidth_hz: 5000,
+  });
+  // 8 zdravých tónů + 4 útržky (0,25 s a tiché) → útržky se vyřadí, žádný výpadek
+  const zdrave = [14, 15, 13, 16, 15, 14, 15, 16].map(() => mk2(-15, 0.8, -13));
+  const utrzky = [0, 1, 2, 3].map(() => mk2(-48, 0.25, -38));
+  const r = ringAnalysis([...zdrave, ...utrzky]);
+  check('útržky (krátké a tiché) → vyřazeny', r.n_notes === 8 && r.n_notes_excluded === 4,
+    `použito ${r.n_notes}, vyřazeno ${r.n_notes_excluded} (krátké ${r.n_excluded_short}, tiché ${r.n_excluded_quiet})`);
+  check('útržky → žádný falešný výpadek', r.dropouts.length === 0,
+    `${r.dropouts.length} výpadků, vyrovnanost ${r.ring_consistency_pct.toFixed(0)} %`);
+
+  // Propadlý tón, který JE dost dlouhý a hlasitý, se musí najít jako výpadek —
+  // kdyby ho filtr vyřadil, zakryl by skutečný problém (a to je horší chyba
+  // než falešný poplach).
+  const kratkyHlasity = [mk2(-15, 1.2, -13), mk2(-15, 1.2, -13), mk2(-15, 1.2, -13),
+    mk2(-15, 1.2, -13), mk2(-15, 1.2, -13), mk2(-15, 1.2, -13),
+    mk2(-30, 0.5, -10)];   // dost dlouhý i hlasitý → zůstává a je výpadek
+  const r2 = ringAnalysis(kratkyHlasity, { minDur: 0.30 });
+  check('propadlý tón (dlouhý a hlasitý) → zůstává a je výpadek',
+    r2.n_notes === 7 && r2.dropouts.length === 1,
+    `použito ${r2.n_notes}, výpadků ${r2.dropouts.length}`);
+
+  // KRÁTKÝ propadlý tón se naopak vyřadí — u něj SPR nic neznamená
+  const kratkyPropadly = [mk2(-15, 1.2, -13), mk2(-15, 1.2, -13), mk2(-15, 1.2, -13),
+    mk2(-15, 1.2, -13), mk2(-15, 1.2, -13), mk2(-15, 1.2, -13),
+    mk2(-45, 0.22, -10)];
+  const r2b = ringAnalysis(kratkyPropadly, { minDur: 0.30 });
+  check('krátký propadlý tón → vyřazen, ne hlášen jako výpadek',
+    r2b.n_notes === 6 && r2b.dropouts.length === 0,
+    `použito ${r2b.n_notes}, vyřazeno ${r2b.n_notes_excluded}`);
+
+  // POJISTKA: když by filtr ukrojil většinu, nesmí se použít (zahodil by důkazy)
+  const vetsinaTicha = [14, 15, 13, 16].map(() => mk2(-15.5, 0.8, -13))
+    .concat([0, 1, 2, 3, 4, 5].map(() => mk2(-30, 0.8, -40)));
+  const r3 = ringAnalysis(vetsinaTicha);
+  check('filtr by ukrojil většinu → nepoužije se', r3.filter_applied === false,
+    `filter_applied=${r3.filter_applied}, použito ${r3.n_notes}`);
+  check('pojistka → výpadky se přesto najdou', r3.dropouts.length === 6,
+    `${r3.dropouts.length} výpadků`);
+
+  // a naopak: když je tichých menšina, vyřadí se a falešný výpadek nevznikne
+  const mensinaTicha = [14, 15, 13, 16, 15, 14, 15, 16, 15, 14].map(() => mk2(-15, 0.8, -13))
+    .concat([0, 1].map(() => mk2(-48, 0.25, -38)));
+  const r4 = ringAnalysis(mensinaTicha);
+  check('tichá menšina → vyřazena, 0 falešných výpadků',
+    r4.filter_applied === true && r4.dropouts.length === 0,
+    `vyřazeno ${r4.n_notes_excluded}, výpadků ${r4.dropouts.length}`);
+}
+
 console.log(`\n═══ VÝSLEDEK: ${pass} prošlo, ${fail} selhalo ═══`);
 const failed = results.filter(r => !r.ok);
 if (failed.length) {

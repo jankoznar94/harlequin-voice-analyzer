@@ -989,15 +989,50 @@ export function gapSplit(values) {
  * Rovnoměrně špatný hlas má vyrovnanost 100 % a úroveň špatnou. Rovnoměrně
  * dobrý má obojí dobré. To se musí hlásit zvlášť, jinak metrika lže.
  */
-export function ringAnalysis(notes) {
-  const usable = notes.filter(n => n.spr_valid && n.spr === n.spr);
-  if (!usable.length) {
+export function ringAnalysis(notes, opts = {}) {
+  const minDur = opts.minDur ?? 0.30;        // kratší tón = SPR z příliš krátkého vzorku
+  const splDrop = opts.splDrop ?? 20;        // tišší tón = SPR pod úrovní šumu
+
+  const valid = notes.filter(n => n.spr_valid && n.spr === n.spr);
+  if (!valid.length) {
     const why = notes.find(n => !n.spr_valid)?.spr_note || 'neznámý důvod';
     return {
       spr_unusable: true, reason: why,
       n_notes: 0, n_notes_total: notes.length, n_notes_excluded: notes.length,
     };
   }
+
+  /* ── Které tóny vůbec jde použít ────────────────────────────────────────
+   * SPR koreluje s hlasitostí (na měřených nahrávkách r ≈ 0,7) a u krátkých
+   * tónů je odhad spektra z několika málo rámců. Tón o 0,25 s a 25 dB pod
+   * úrovní zpěvu nemá „ztracený ring“ — nemá měřitelnou barvu. Kdyby zůstal
+   * v sadě, vyjde jako výpadek a pošle člověka hledat problém, který
+   * v nahrávce není. Proto se takové tóny VYŘADÍ a jejich počet se přizná.
+   *
+   * Referenční úroveň zpěvu se bere jako 75. percentil hlasitosti, NE medián:
+   * když je tichých tónů hodně, medián sám klesne pod ně a filtr by nic
+   * nevyřadil (ověřeno — 6 tichých z 10 prošlo jako měřitelné).
+   *
+   * Když by ale filtr ukrojil většinu sady, nesmí se použít — zahodil by
+   * důkazy. Radši přiznaně nepřesné číslo než tiše ztracené tóny.
+   */
+  const spls = valid.map(n => n.spl_dbfs).filter(v => v === v).sort((a, b) => a - b);
+  const medSpl = spls.length
+    ? spls[Math.min(spls.length - 1, Math.floor(0.75 * spls.length))]
+    : -Infinity;
+  const splMin = medSpl - splDrop;
+
+  const isShort = (n) => n.dur < minDur;
+  const isQuiet = (n) => n.spl_dbfs < splMin;
+  let usable = valid.filter(n => !isShort(n) && !isQuiet(n));
+  let filtered = true;
+  if (usable.length < 5 || usable.length < 0.4 * valid.length) {
+    usable = valid;                          // filtr by ukrojil většinu → nepoužít
+    filtered = false;
+  }
+  const nShort = valid.filter(isShort).length;
+  const nQuiet = valid.filter(n => !isShort(n) && isQuiet(n)).length;
+
   const s = usable.map(n => n.spr).sort((a, b) => a - b);
   const med = s.length & 1 ? s[s.length >> 1]
     : (s[(s.length >> 1) - 1] + s[s.length >> 1]) / 2;
@@ -1037,6 +1072,12 @@ export function ringAnalysis(notes) {
     n_notes: usable.length,
     n_notes_total: notes.length,
     n_notes_excluded: notes.length - usable.length,
+    n_excluded_short: filtered ? nShort : 0,
+    n_excluded_quiet: filtered ? nQuiet : 0,
+    filter_applied: filtered,
+    med_spl_dbfs: medSpl === -Infinity ? null : medSpl,
+    min_dur_used: minDur,
+    spl_drop_used: splDrop,
     spr_median: med,
     spr_mean: mean,
     spr_sd: sd,

@@ -2,7 +2,7 @@
  * Service worker — offline provoz.
  * Verze cache zvyš při změně souborů, jinak se drží stará.
  */
-const CACHE = 'vocal-lab-v3';
+const CACHE = 'vocal-lab-v4';
 const ASSETS = [
   './',
   './index.html',
