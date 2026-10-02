@@ -690,7 +690,16 @@ export function analyze(samples, sampleRate, opts = {}) {
   const progress = opts.onProgress || (() => {});
 
   const duration = samples.length / sampleRate;
-  progress(0.05, 'Sleduji výšku tónu…');
+  progress(0.05, 'Kontroluji šířku pásma…');
+
+  // ── PÁSMO SE MĚŘÍ JEDNOU ZA NAHRÁVKU ──────────────────────────────────
+  // Ne po tónech! Když se měří per-tón, výsledek sleduje tvar šumového dna
+  // daného úseku, ne skutečnou šířku pásma — a čisté tóny pak propadnou,
+  // zatímco zašuměné projdou. Ověřeno na případech se známou pravdou.
+  const specFull = ltas(samples, sampleRate);
+  const band = specFull ? sprValid(specFull) : { valid: false, reason: 'spektrum nelze vyhodnotit', limit: NaN };
+
+  progress(0.12, 'Sleduji výšku tónu…');
 
   const { times, f0 } = pitchTrack(samples, sampleRate);
   progress(0.35, 'Dělím nahrávku na tóny…');
@@ -722,7 +731,7 @@ export function analyze(samples, sampleRate, opts = {}) {
   const notes = [];
   for (let i = 0; i < spans.length; i++) {
     const [t0, t1] = spans[i];
-    const nm = measureNote(samples, sampleRate, times, f0, i + 1, t0, t1);
+    const nm = measureNote(samples, sampleRate, times, f0, i + 1, t0, t1, band);
     if (nm) notes.push(nm);
     if (i % 10 === 0) progress(0.45 + 0.45 * (i / Math.max(1, spans.length)),
       `Měřím tón ${i + 1}/${spans.length}…`);
@@ -735,11 +744,12 @@ export function analyze(samples, sampleRate, opts = {}) {
   return {
     duration_s: duration, sample_rate: sampleRate, fach,
     n_notes: notes.length, n_dropped: dropped.length,
+    band,                          // šířka pásma nahrávky (měřeno jednou)
     notes, summary, refs: REFS,
   };
 }
 
-function measureNote(samples, sampleRate, times, f0raw, idx, t0, t1) {
+function measureNote(samples, sampleRate, times, f0raw, idx, t0, t1, band) {
   const dur = t1 - t0;
   const a = t0 + 0.20 * dur;
   const b = t1 - 0.20 * dur;
@@ -752,8 +762,8 @@ function measureNote(samples, sampleRate, times, f0raw, idx, t0, t1) {
   const spec = ltas(seg, sampleRate);
   if (!spec) return null;
 
-  const sv = sprValid(spec);
-  const sprVal = sv.valid ? spr(spec) : NaN;
+  // SPR se měří jen když má CELÁ nahrávka dostatečné pásmo
+  const sprVal = band.valid ? spr(spec) : NaN;
 
   // SPL relativní
   let rms = 0;
@@ -798,8 +808,8 @@ function measureNote(samples, sampleRate, times, f0raw, idx, t0, t1) {
     f0_sd_cents: sdC,
     spl_dbfs: spl,
     spr: sprVal,
-    spr_valid: sv.valid, spr_note: sv.reason,
-    bandwidth_hz: sv.limit,
+    spr_valid: band.valid, spr_note: band.reason,
+    bandwidth_hz: band.limit,
     alpha: alphaRatio(spec),
     fhe: fhe(spec),
     hnr: hnrV,

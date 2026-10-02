@@ -254,6 +254,29 @@ console.log('\n═══ 9. Vibrato ═══');
     `naměřeno ${cents.toFixed(0)} centů`);
 }
 
+console.log('\n═══ 10. Pásmo se měří JEDNOU za nahrávku (regrese) ═══');
+{
+  // Chyba, která se nesmí vrátit: když se šířka pásma měří po tónech,
+  // výsledek sleduje tvar šumového dna daného úseku — čisté tóny propadnou
+  // a zašuměné projdou. Přesně obráceně.
+  const f0 = 220;
+  const sig = tone(f0, 2.0, { formant: [2500, 3200, 20] });
+  const res = analyze(sig, SR, { fach: 'vse' });
+  check('analyze vrací band (pásmo nahrávky)', !!res.band && 'valid' in res.band,
+    res.band ? `měřitelné=${res.band.valid}, mez=${Math.round(res.band.limit)} Hz` : 'chybí');
+  check('plné pásmo → SPR měřitelné', res.band.valid === true);
+
+  // useknuté pásmo → všechny tóny musí být označené jako neměřitelné
+  const tel = brickwall(sig, 3400);
+  const resTel = analyze(tel, SR, { fach: 'vse' });
+  check('useknuté pásmo → band.valid = false', resTel.band.valid === false, resTel.band.reason);
+  const anyMeasured = resTel.notes.some(n => n.spr_valid);
+  check('useknuté pásmo → žádný tón nemá SPR', !anyMeasured,
+    anyMeasured ? 'NĚKTERÉ TÓNY PROŠLY — chyba!' : '');
+  check('useknuté pásmo → summary hlásí unusable',
+    resTel.summary.spr_unusable === true);
+}
+
 console.log(`\n═══ VÝSLEDEK: ${pass} prošlo, ${fail} selhalo ═══`);
 const failed = results.filter(r => !r.ok);
 if (failed.length) {
