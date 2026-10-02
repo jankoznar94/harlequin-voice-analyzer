@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<title>Kontrola ukazatele přehrávání</title>
+<style>
+  body { background: #1a1715; color: #e8e2dc; font: 14px sans-serif; margin: 16px; }
+  main { max-width: 820px; margin: 0 auto; }
+  .chart-wrap { position: relative; margin: 10px 0 4px; }
+  .chart { width: 100%; display: block; background: #231f1c; border: 1px solid #3a3330; border-radius: 6px; }
+  .chart-head { position: absolute; inset: 0; width: 100%; height: 230px; display: block; pointer-events: none; }
+  pre { background: #231f1c; border: 1px solid #3a3330; border-radius: 6px; padding: 12px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Kontrola: ukazatel přehrávání v grafu ringu</h1>
+  <p>Skutečný <code>charts.js</code>, syntetická melodie se známým počtem tónů.
+     Test hledá pixel ukazatele ve druhém (překryvném) plátně a porovnává jeho
+     x s x, které má tón v grafu.</p>
+
+  <div class="chart-wrap">
+    <canvas id="c-spr" class="chart" width="800" height="230"></canvas>
+    <canvas id="c-spr-head" class="chart-head" width="800" height="230"></canvas>
+  </div>
+
+  <div class="chart-wrap">
+    <canvas id="c-spec" class="chart" width="800" height="300" style="height:300px"></canvas>
+    <canvas id="c-spec-head" class="chart-head" width="800" height="300" style="height:300px"></canvas>
+  </div>
+  <pre id="out">běží…</pre>
+</main>
+
+<script type="module">
+import { drawSpr, drawSprHead, sprGeom, drawSpec, drawSpecHead, specGeom } from './src/charts.js';
+
+const out = [];
+const say = (ok, msg) => out.push(`${ok ? '✓' : '✗'} ${msg}`);
+
+// ── syntetický zpěv: 4 tóny se známým rozložením v čase ────────────────
+const SR = 44100, DUR = 4.0;
+const notes = [];
+{
+  const f0s = [220, 262, 330, 392];
+  const total = Math.round(DUR * SR);
+  const samples = new Float64Array(total);
+  notes.length = 0;
+  f0s.forEach((f0, k) => {
+    const t0 = k * 1.0 + 0.05, t1 = t0 + 0.8;
+    for (let i = Math.round(t0 * SR); i < Math.round(t1 * SR); i++) {
+      const t = i / SR;
+      let s = 0;
+      for (let h = 1; h < 30; h++) {
+        const fh = f0 * h;
+        const amp = (1 / h) * (Math.exp(-((fh - 2800) ** 2) / (2 * 900 ** 2)) + 0.3 * Math.exp(-((fh - 700) ** 2) / (2 * 400 ** 2)));
+        s += amp * Math.sin(2 * Math.PI * fh * t);
+      }
+      samples[i] = 0.3 * s * Math.min(1, (i - t0 * SR) / 400) * Math.min(1, (t1 * SR - i) / 400);
+    }
+    notes.push({ t_start: t0, t_end: t1, spr: -12 - k * 0.4, ring_ok: true });
+  });
+  window.__samples = samples;
+}
+
+const summary = { ring_threshold: -17.5, reason: '' };
+const cv = document.getElementById('c-spr');
+const head = document.getElementById('c-spr-head');
+
+// Vyrovnat CSS rozměry s tím, co čeká setup() (clientWidth rozhoduje)
+cv.style.height = '230px'; head.style.height = '230px';
+
+const g = drawSpr(cv, notes, summary);
+say(!!g, `drawSpr vrátil geometrii (šířka plátna ${cv.clientWidth} px)`);
+
+// Ukazatel na prostředek druhého tónu
+const T = 1.45;
+drawSprHead(head, notes, summary, T);
+
+// Najdi pixel ukazatele: barva #ece5dd (236,229,221), tolerance ±10
+const ctx = head.getContext('2d');
+const dpr = window.devicePixelRatio || 1;
+const W = head.width, H = head.height;
+const img = ctx.getImageData(0, 0, W, H);
+let cols = [];
+for (let x = 0; x < W; x++) {
+  let hits = 0;
+  for (let y = 0; y < H; y++) {
+    const i = (y * W + x) * 4;
+    const [r, gg, b, a] = [img.data[i], img.data[i + 1], img.data[i + 2], img.data[i + 3]];
+    if (a > 200 && Math.abs(r - 236) < 12 && Math.abs(gg - 229) < 12 && Math.abs(b - 221) < 12) hits++;
+  }
+  if (hits > H * 0.3) cols.push({ x, hits });
+}
+say(cols.length > 0, `nalezen sloupec ukazatele (${cols.length} px široký, dpr ${dpr})`);
+
+if (cols.length) {
+  const xs = cols.map(c => c.x);
+  const centreDev = (Math.min(...xs) + Math.max(...xs)) / 2;
+  const expect = g.x(T) * dpr;
+  const dev = Math.abs(centreDev - expect);
+  say(dev <= 3, `ukazatel stojí na čase ${T} s — skutečné x ${centreDev.toFixed(1)}, očekávané ${expect.toFixed(1)} (odchylka ${dev.toFixed(1)} px device)`);
+
+  // Ukazatel musí být uvnitř plochy grafu, ne v ose Y
+  const leftOk = Math.min(...xs) >= (g.padL * dpr) - 2;
+  const rightOk = Math.max(...xs) <= ((g.padL + g.plotW) * dpr) + 2;
+  say(leftOk && rightOk, `ukazatel je uvnitř plochy grafu (x ${Math.min(...xs)}…${Math.max(...xs)}, plocha ${(g.padL*dpr).toFixed(0)}…${((g.padL+g.plotW)*dpr).toFixed(0)})`);
+} else {
+  say(false, 'sloupec ukazatele nenalezen — zkontroluj barvu/vykreslení');
+}
+
+// ── spektrogram: ukazatel musí sedět na hranici tónů ─────────────────
+{
+  const cvs = document.getElementById('c-spec');
+  const cvsHead = document.getElementById('c-spec-head');
+
+  const sg = specGeom(cvs.clientWidth, 300, DUR);
+  drawSpec(cvs, window.__samples, SR, notes);
+  drawSpecHead(cvsHead, DUR, notes[1].t_start);
+
+  const hctx = cvsHead.getContext('2d');
+  const himg = hctx.getImageData(0, 0, cvsHead.width, cvsHead.height);
+  let hx = -1, best = 0, opaque = 0;
+  for (let x = 0; x < cvsHead.width; x++) {
+    let hits = 0;
+    for (let y = 0; y < cvsHead.height; y++) {
+      const i = (y * cvsHead.width + x) * 4;
+      if (himg.data[i + 3] > 200) {
+        opaque++;
+        if (Math.abs(himg.data[i] - 236) < 12) hits++;
+      }
+    }
+    if (hits > best) { best = hits; hx = x; }
+  }
+  const expect = sg.x(notes[1].t_start) * dpr;
+  say(hx >= 0 && Math.abs(hx - expect) <= 3,
+    `spektrogram: ukazatel na hranici tónu (x ${hx}, očekáváno ${expect.toFixed(1)}, odchylka ${Math.abs(hx - expect).toFixed(1)} px)`);
+  say(opaque > 0, `spektrogram: na překryvném plátně je ${opaque} neprůhledných px (buffer ${cvsHead.width}×${cvsHead.height}, clientW ${cvsHead.clientWidth})`);
+}
+
+document.getElementById('out').textContent = out.join('\n');
+</script>
+</body>
+</html>

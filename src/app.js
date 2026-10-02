@@ -3,15 +3,19 @@
  * Nahrávání/načtení → analýza v prohlížeči → výsledky → historie.
  */
 import { analyze, REFS, czPlural } from './analysis.js';
-import { drawSpr, drawF1, drawSpec, drawTrend, fmt } from './charts.js';
+import {
+  drawSpr, drawF1, drawSpec, drawTrend, fmt,
+  sprGeom, drawSpecHead, drawSprHead, clearHead, SPR_H, SPEC_H,
+} from './charts.js';
 
 const $ = (id) => document.getElementById(id);
 const HIST_KEY = 'vocal-lab.history.v1';
 const MAX_HIST = 60;
 
-let current = null;      // { result, samples, sampleRate, label, date }
+let current = null;      // { result, samples, sampleRate, label, date, buffer, url }
 let recorder = null, recChunks = [], recStream = null, recTimer = null, recStart = 0;
 let audioCtx = null, analyser = null, levelRaf = 0, cancelled = false;
+let player = null;       // { el, url, raf, loopNote, seeking }
 
 /* ═══════════════════════════════════════ nahrávání */
 
@@ -177,7 +181,11 @@ function runAnalysis(samples, sampleRate, label) {
     console.log(`[i] analýza ${samples.length / sampleRate | 0} s audia za ${secs.toFixed(1)} s`);
     if (cancelled) return;
 
-    current = { result: res, samples, sampleRate, label, date: new Date().toISOString() };
+    current = {
+      result: res, samples, sampleRate, label, date: new Date().toISOString(),
+      buffer: blob,               // originál — přehrávač si ho přehraje, ne dekódované vzorky
+      url: URL.createObjectURL(blob),
+    };
     showResult(res, samples, sampleRate, label, secs);
   }, 40);
 }
@@ -294,11 +302,13 @@ function showResult(res, samples, sampleRate, label, secs) {
     dw.classList.add('hidden');
   }
 
-  // grafy
+  // grafy — drawSpr vrací geometrii, kterou používá klik do grafu i přehrávač
   requestAnimationFrame(() => {
-    drawSpr($('c-spr'), res.notes, s);
+    sprGeomRef = drawSpr($('c-spr'), res.notes, s);
     drawF1($('c-f1'), res.notes, $('hint-f1'));
     drawSpec($('c-spec'), samples, sampleRate, res.notes);
+    setupPlayer();
+    updatePlayheadUI();
   });
 
   // tabulka
@@ -463,7 +473,165 @@ function renderHist() {
   requestAnimationFrame(() => drawTrend(cv, rows));
 }
 
-/* ═══════════════════════════════════════ exporty */
+/* ═══════════════════════════════════════ přehrávač + ukazatel */
+
+let sprGeomRef = null;     // geometrie grafu ringu (z drawSpr) — pro klik a ukazatel
+let lastHeadT = -1;        // poslední vykreslený čas, ať se nekreslí pořád totéž
+
+/**
+ * Nastaví přehrávač na právě změřenou nahrávku.
+ *
+ * Přehrává se PŮVODNÍ blob, ne dekódované vzorky — zvuk je pak přesně to, co
+ * uživatel nahrál (a co se analyzovalo), bez přehrávání přes Web Audio.
+ */
+function setupPlayer() {
+  teardownPlayer();
+  if (!current) return;
+
+  lastHeadT = -1;   // nová nahrávka → ukazatel se musí překreslit i na stejném čase
+  const el = new Audio();
+  el.src = current.url;
+  el.preload = 'metadata';
+
+  player = { el, url: current.url, raf: 0, loopNote: null, seeking: false };
+
+  el.addEventListener('loadedmetadata', () => updatePlayheadUI());
+  el.addEventListener('timeupdate', () => { if (!player.seeking) updatePlayheadUI(); });
+  el.addEventListener('ended', () => {
+    // Smyčka tónu: po dojetí tónu skoč zpět na jeho začátek a hraj dál.
+    if (player.loopNote) { el.currentTime = player.loopNote.t_start; el.play().catch(() => {}); }
+    else { setPlayIcon(false); updatePlayheadUI(); }
+  });
+
+  setPlayIcon(false);
+  setLoopPressed(false);
+  $('btn-play').onclick = togglePlay;
+  $('btn-loop').onclick = toggleLoop;
+  $('seek').oninput = onSeekInput;
+  $('c-spr').onclick = onChartClick;
+  $('c-spec').onclick = onChartClick;
+  updatePlayheadUI();
+}
+
+function teardownPlayer() {
+  if (!player) return;
+  cancelAnimationFrame(player.raf);
+  if (player.url) URL.revokeObjectURL(player.url);
+  if (player.el) { player.el.pause(); player.el.removeAttribute('src'); }
+  player = null;
+}
+
+function togglePlay() {
+  if (!player) return;
+  if (player.el.paused) player.el.play().catch(e => console.warn('přehrávání', e));
+  else player.el.pause();
+  setPlayIcon(!player.el.paused);
+  updatePlayheadUI();
+}
+
+function setPlayIcon(playing) {
+  const ic = $('play-icon');
+  if (!ic) return;
+  ic.innerHTML = playing
+    ? '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4h4v16H7zM13 4h4v16h-4z"/></svg>'
+    : '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4l13 8-13 8z"/></svg>';
+  $('btn-play').setAttribute('aria-label', playing ? 'Pozastavit nahrávku' : 'Přehrát nahrávku');
+}
+
+function setLoopPressed(on) {
+  const b = $('btn-loop');
+  if (b) b.setAttribute('aria-pressed', on ? 'true' : 'false');
+}
+
+/** Najde tón, do kterého spadá daný čas — pro smyčku i pro zvýraznění. */
+function noteAt(t) {
+  const notes = current?.result?.notes || [];
+  return notes.find(n => t >= n.t_start && t < n.t_end) || null;
+}
+
+function toggleLoop() {
+  if (!player) return;
+  if (player.loopNote) { player.loopNote = null; setLoopPressed(false); return; }
+  const n = noteAt(player.el.currentTime);
+  if (!n) { showToast('V tomto místě není změřený tón — přesuň se na tón.'); return; }
+  player.loopNote = n;
+  setLoopPressed(true);
+  if (player.el.currentTime < n.t_start || player.el.currentTime >= n.t_end) {
+    player.el.currentTime = n.t_start;
+  }
+  player.el.play().catch(() => {});
+  setPlayIcon(true);
+  updatePlayheadUI();
+}
+
+function onSeekInput() {
+  if (!player) return;
+  const d = player.el.duration || current?.result?.duration_s || 0;
+  player.seeking = true;
+  player.el.currentTime = ($('seek').value / 1000) * d;
+  updatePlayheadUI();
+  clearTimeout(onSeekInput._t);
+  onSeekInput._t = setTimeout(() => { if (player) player.seeking = false; }, 220);
+}
+
+/** Klepnutí do grafu = přeskoč na to místo v nahrávce. */
+function onChartClick(e) {
+  if (!player) return;
+  const cv = e.currentTarget;
+  const px = e.clientX - cv.getBoundingClientRect().left;
+  let t;
+  if (cv.id === 'c-spr') {
+    if (!sprGeomRef) return;
+    t = sprGeomRef.timeAtX(px);
+  } else {
+    const w = cv.clientWidth, plotW = w - 42 - 12;
+    if (plotW <= 0) return;
+    t = ((px - 42) / plotW) * (current.result.duration_s || 1);
+  }
+  t = Math.max(0, Math.min(t, player.el.duration || current.result.duration_s || 0));
+  player.el.currentTime = t;
+  // smyčka se váže na tón — po přesunu je potřeba ji přepočítat
+  if (player.loopNote) player.loopNote = noteAt(t);
+  updatePlayheadUI();
+}
+
+/**
+ * Překreslí ukazatel (a při přesunu i čísla) podle aktuálního času.
+ *
+ * Vlastní kresba ukazatele jde do rAF smyčky, protože `timeupdate` chodí jen
+ * ~4× za sekundu — s ním by čára poskakovala. rAF se sám zastaví, když se nic
+ * nezměnilo (pauza), takže na pozadí nic nežere.
+ */
+function updatePlayheadUI() {
+  if (!player) return;
+  const el = player.el;
+  const d = el.duration || current?.result?.duration_s || 0;
+  const t = el.currentTime || 0;
+
+  const pm = Math.floor(t / 60), ps = Math.floor(t % 60);
+  const dm = Math.floor(d / 60), ds = Math.floor(d % 60);
+  $('play-time').textContent =
+    `${pm}:${String(ps).padStart(2, '0')} / ${dm}:${String(ds).padStart(2, '0')}`;
+  if (!player.seeking && d > 0) $('seek').value = String(Math.round((t / d) * 1000));
+
+  paintHeads(t);
+
+  if (!el.paused) {
+    cancelAnimationFrame(player.raf);
+    player.raf = requestAnimationFrame(() => updatePlayheadUI());
+  }
+}
+
+/** Vykreslí čáru na oba grafy; přeskočí, když se čas nezměnil. */
+function paintHeads(t) {
+  if (Math.abs(t - lastHeadT) < 0.004) return;
+  lastHeadT = t;
+  const s = current?.result?.summary;
+  if (s) drawSprHead($('c-spr-head'), current.result.notes, s, t);
+  const dur = current?.result?.duration_s;
+  if (dur) drawSpecHead($('c-spec-head'), dur, t);
+}
+
 
 function download(name, text, mime = 'text/plain') {
   const b = new Blob([text], { type: mime + ';charset=utf-8' });
@@ -532,6 +700,11 @@ function init() {
     $('panel-input').classList.remove('hidden');
   };
   $('btn-new').onclick = () => {
+    teardownPlayer();
+    lastHeadT = -1;
+    clearHead($('c-spr-head'), SPR_H);
+    clearHead($('c-spec-head'), SPEC_H);
+    if (current?.url) URL.revokeObjectURL(current.url);
     current = null;
     $('panel-result').classList.add('hidden');
     $('panel-input').classList.remove('hidden');

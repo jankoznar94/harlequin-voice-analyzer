@@ -6,6 +6,7 @@
 const COL = {
   bg: '#231f1c', grid: '#3a3330', text: '#a89f97', textDim: '#7d746d',
   ok: '#6a9e6a', bad: '#b5675e', accent: '#b8894f', ref: '#6d7f9c',
+  head: '#ece5dd',   // ukazatel přehrávání — světlý neutrál, čitelný přes sloupce
 };
 
 /** Připraví canvas na HiDPI a vrátí kontext + rozměry v CSS px. */
@@ -42,31 +43,141 @@ function fmt(v, d = 1) {
 
 /* ─────────────────────────────────────────── SPR po tónech */
 
+export const SPR_H = 230;
+const SPR_PAD = { l: 46, r: 12, t: 14, b: 34 };
+export const SPEC_H = 300;
+const SPEC_PAD = { l: 42, r: 12, t: 12, b: 26 };
+
+/**
+ * Geometrie grafu ringu: rozsah os, měřítko času a převod kliku na čas.
+ *
+ * Je to schválně JEDINÉ místo, kde se měřítko počítá — používají ho obě věci,
+ * které musí sedět na pixel: vykreslení grafu i „klepni do grafu a přeskoč tam".
+ * Kdyby si app.js počítalo mapování samo, stačí posunout osu a klikání začne
+ * hledat o kus vedle, aniž by to bylo na první pohled vidět.
+ *
+ * @returns {null|object} null, když není co měřit (žádný tón s platným SPR)
+ */
+export function sprGeom(w, h, notes, summary) {
+  const plotW = w - SPR_PAD.l - SPR_PAD.r, plotH = h - SPR_PAD.t - SPR_PAD.b;
+  const meas = notes.filter(n => n.spr === n.spr);
+  if (!meas.length) return null;
+  const vals = meas.map(n => n.spr);
+  const thr = Number.isFinite(summary?.ring_threshold) ? summary.ring_threshold : Math.min(...vals);
+  let lo = Math.min(...vals, thr), hi = Math.max(...vals);
+  const pad = Math.max(2, (hi - lo) * 0.12);
+  lo -= pad; hi += pad;
+  const t1 = Math.max(...notes.map(n => n.t_end), 1);
+  const x = (t) => SPR_PAD.l + (t / t1) * plotW;
+  const y = (v) => SPR_PAD.t + plotH - ((v - lo) / (hi - lo)) * plotH;
+  return {
+    w, h, padL: SPR_PAD.l, padR: SPR_PAD.r, padT: SPR_PAD.t, padB: SPR_PAD.b,
+    plotW, plotH, lo, hi, t1, x, y, meas,
+    timeAtX: (px) => ((px - SPR_PAD.l) / plotW) * t1,
+  };
+}
+
+/** Geometrie spektrogramu — stejné rozměry jako drawSpec, proto na něj sedí. */
+export function specGeom(w, h, duration) {
+  const plotW = w - SPEC_PAD.l - SPEC_PAD.r, plotH = h - SPEC_PAD.t - SPEC_PAD.b;
+  const t1 = Math.max(duration || 0, 0.001);
+  return {
+    w, h, padL: SPEC_PAD.l, padR: SPEC_PAD.r, padT: SPEC_PAD.t, padB: SPEC_PAD.b,
+    plotW, plotH, t1,
+    x: (t) => SPEC_PAD.l + (t / t1) * plotW,
+    timeAtX: (px) => ((px - SPEC_PAD.l) / plotW) * t1,
+  };
+}
+
+/**
+ * Ukazatel přehrávání: svislá čára + klín nahoře. Kreslí se plnou barvou,
+ * bez glow — světlý neutrál je čitelný přes zelené i červené sloupce.
+ *
+ * @param {object} g geometrie (sprGeom nebo specGeom)
+ * @param {number} t čas v sekundách
+ */
+export function drawPlayhead(ctx, g, t) {
+  const tt = Math.max(0, Math.min(Number.isFinite(t) ? t : 0, g.t1));
+  const xx = Math.round(g.x(tt)) + 0.5;
+  if (xx < g.padL || xx > g.padL + g.plotW) return;
+
+  ctx.strokeStyle = COL.head;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(xx, g.padT); ctx.lineTo(xx, g.padT + g.plotH);
+  ctx.stroke();
+
+  // Klín nahoře — bez něj se čára v hustém grafu ztratí mezi mřížkou.
+  ctx.fillStyle = COL.head;
+  ctx.beginPath();
+  ctx.moveTo(xx - 5, g.padT); ctx.lineTo(xx + 5, g.padT); ctx.lineTo(xx, g.padT + 8);
+  ctx.closePath(); ctx.fill();
+}
+
+/** Průhledné plátno přesně přes graf — pro ukazatel, který se hýbe. */
+function setupOverlay(canvas, cssHeight) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth || canvas.parentElement?.clientWidth || 600;
+  const h = cssHeight || canvas.clientHeight || 200;
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  return { ctx, w, h };
+}
+
+/**
+ * Ukazatel přes spektrogram.
+ *
+ * Spektrogram se kreslí z FFT — překreslovat ho 60× za sekundu by na telefonu
+ * zadrhlo. Proto přes něj leží druhé, průhledné plátno (`.chart-head`), na které
+ * se kreslí jen čára.
+ */
+export function drawSpecHead(canvas, duration, t) {
+  const { ctx, w, h } = setupOverlay(canvas, SPEC_H);
+  drawPlayhead(ctx, specGeom(w, h, duration), t);
+}
+
+/**
+ * Ukazatel přes graf ringu (tamtéž, jen na průhledném plátně).
+ *
+ * Geometrie se počítá znovu při každém vykreslení — je to pár desítek čísel
+ * nad ~50 tóny, takže je to zdarma, a hlavně se tím nemůže rozejít s grafem
+ * po otočení telefonu nebo změně šířky okna.
+ */
+export function drawSprHead(canvas, notes, summary, t) {
+  const { ctx, w, h } = setupOverlay(canvas, SPR_H);
+  const g = sprGeom(w, h, notes, summary);
+  if (g) drawPlayhead(ctx, g, t);
+}
+
+/** Smaže ukazatel (nové měření, ukončení přehrávání). */
+export function clearHead(canvas, cssHeight) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth || canvas.parentElement?.clientWidth || 600;
+  const h = cssHeight || canvas.clientHeight || 200;
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
+  canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+}
+
 /**
  * Graf ringu. Osa X je ČAS v nahrávce, ne index tónu — jinak se v grafu nedá
  * najít, kde konkrétně se ring ztrácí, a graf je k ničemu.
+ *
+ * @param {number} [playheadT] čas přehrávání; když je zadaný, dokreslí se ukazatel
+ * @returns {object|null} geometrie (sprGeom) — používá ji app.js pro klik → čas
  */
-export function drawSpr(canvas, notes, summary) {
-  const H = 230;
-  const { ctx, w, h } = setup(canvas, H);
-  const padL = 46, padR = 12, padT = 14, padB = 34;
-  const plotW = w - padL - padR, plotH = h - padT - padB;
-
-  const meas = notes.filter(n => n.spr === n.spr);
-  const vals = meas.map(n => n.spr);
-  if (!vals.length) {
+export function drawSpr(canvas, notes, summary, playheadT = null) {
+  const { ctx, w, h } = setup(canvas, SPR_H);
+  const g = sprGeom(w, h, notes, summary);
+  if (!g) {
     ctx.fillStyle = COL.textDim;
-    ctx.fillText(summary?.reason || 'Ring nelze měřit', padL, h / 2);
-    return;
+    ctx.fillText(summary?.reason || 'Ring nelze měřit', 46, h / 2);
+    return null;
   }
-  let lo = Math.min(...vals, summary.ring_threshold), hi = Math.max(...vals);
-  const pad = Math.max(2, (hi - lo) * 0.12);
-  lo -= pad; hi += pad;
-
-  const t0 = 0;
-  const t1 = Math.max(...notes.map(n => n.t_end), 1);
-  const x = (t) => padL + ((t - t0) / (t1 - t0)) * plotW;
-  const y = (v) => padT + plotH - ((v - lo) / (hi - lo)) * plotH;
+  const { padL, padR, padT, padB, plotW, plotH, lo, hi, t1, x, y, meas } = g;
 
   // mřížka + osa Y
   ctx.strokeStyle = COL.grid; ctx.lineWidth = 1;
@@ -132,6 +243,10 @@ export function drawSpr(canvas, notes, summary) {
     ctx.fillText(label, w - padR - 128, ly);
     ly += 13;
   }
+
+  // ukazatel přehrávání — kreslí se až navrch, aby ho sloupce nepřekryly
+  if (playheadT !== null) drawPlayhead(ctx, g, playheadT);
+  return g;
 }
 
 /** mm:ss z sekund pro popisky osy. */
@@ -203,10 +318,10 @@ export function drawF1(canvas, notes, hintEl) {
 /* ─────────────────────────────────────────── Spektrogram */
 
 export function drawSpec(canvas, samples, sampleRate, notes) {
-  const H = 300;
-  const { ctx, w, h, dpr } = setup(canvas, H);
-  const padL = 42, padR = 12, padT = 12, padB = 26;
-  const plotW = Math.round(w - padL - padR), plotH = Math.round(h - padT - padB);
+  const { ctx, w, h, dpr } = setup(canvas, SPEC_H);
+  const g = specGeom(w, h, samples.length / sampleRate);
+  const padL = g.padL, padR = g.padR, padT = g.padT, padB = g.padB;
+  const plotW = Math.round(g.plotW), plotH = Math.round(g.plotH);
 
   const nfft = 1024;
   const hop = Math.max(1, Math.floor(samples.length / plotW));
@@ -304,10 +419,11 @@ export function drawSpec(canvas, samples, sampleRate, notes) {
     ctx.strokeStyle = 'rgba(255,255,255,.16)';
     ctx.beginPath(); ctx.moveTo(xx, padT); ctx.lineTo(xx, padT + plotH); ctx.stroke();
   }
-  for (let s = 0; s <= total; s += Math.max(1, Math.round(total / 8))) {
-    const xx = Math.round(padL + (s / total) * plotW);
+  for (const tv of niceTicks(0, total, 6).filter(v => v > 0)) {
+    const xx = Math.round(g.x(tv));
+    if (xx < padL || xx > padL + plotW) continue;
     ctx.fillStyle = COL.textDim;
-    ctx.fillText(`${s}s`, xx + 2, h - 8);
+    ctx.fillText(fmtClock(tv), xx - 12, h - 8);
   }
 }
 

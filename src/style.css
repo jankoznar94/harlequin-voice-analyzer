@@ -198,6 +198,55 @@ select:focus-visible, .btn:focus-visible, .link:focus-visible {
 }
 .chart.tall { height: 300px; }
 
+/* Graf + průhledné plátno s ukazatelem přehrávání přes něj.
+   Ukazatel se hýbe 60× za sekundu, kdežto graf se kreslí jednou — překreslovat
+   spektrogram by na telefonu zadrhlo, proto leží ukazatel na vlastním plátně. */
+.chart-wrap { position: relative; margin: 10px 0 4px; }
+.chart-wrap .chart { margin: 0; }
+.chart-wrap .chart-head {
+  position: absolute; inset: 0;
+  width: 100%; height: 230px;
+  display: block;
+  pointer-events: none;   /* kliky jdou na graf pod ukazatelem */
+}
+.chart-wrap .chart-head.tall { height: 300px; }
+
+/* ── přehrávač pod grafem ringu ── */
+.player {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 14px 0 6px;
+}
+.player .btn.icon { width: 50px; min-height: 50px; }
+.ptime {
+  font-variant-numeric: tabular-nums; font-size: 14px; color: var(--fg-dim);
+  min-width: 92px;
+}
+.btn.loop { min-height: 50px; padding: 0 14px; font-size: 14px; }
+.btn.loop[aria-pressed="true"] {
+  background: var(--accent); border-color: var(--accent); color: #1a1715; font-weight: 600;
+}
+.seek {
+  flex: 1 1 100%; width: 100%; margin: 2px 0 0;
+  -webkit-appearance: none; appearance: none;
+  height: 26px; background: transparent; cursor: pointer;
+}
+.seek::-webkit-slider-runnable-track { height: 4px; background: var(--bg-input); border-radius: 2px; }
+.seek::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 18px; height: 18px; margin-top: -7px;
+  background: var(--accent); border-radius: 50%;
+}
+.seek::-moz-range-track { height: 4px; background: var(--bg-input); border-radius: 2px; }
+.seek::-moz-range-thumb {
+  width: 18px; height: 18px; border: 0; background: var(--accent); border-radius: 50%;
+}
+
+/* Malý displej: čas a tlačítka se vejdou na jeden řádek, lišta pod nimi. */
+@media (max-width: 420px) {
+  .ptime { min-width: 84px; }
+  .btn.loop { padding: 0 10px; font-size: 13px; }
+}
+
 /* ── tabulky ── */
 .tbl-wrap { overflow-x: auto; margin: 10px 0; border: 1px solid var(--line); border-radius: var(--radius); }
 table { border-collapse: collapse; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }

@@ -18,6 +18,7 @@ globalThis.document = {
 };
 
 const mod = await import('../src/charts.js');
+import { sprGeom, specGeom, drawSpr } from '../src/charts.js';
 
 let pass = 0, fail = 0;
 const check = (name, ok, detail = '') => {
@@ -144,3 +145,4 @@ check('velmi tichá nahrávka je pořád čitelná', r5.maxR > 120,
 
 console.log(`\n${fail === 0 ? '✓' : '✗'} Spektrogram: ${pass} prošlo, ${fail} selhalo\n`);
 process.exit(fail ? 1 : 0);
+
