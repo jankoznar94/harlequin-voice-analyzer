@@ -226,9 +226,21 @@ select:focus-visible, .btn:focus-visible, .link:focus-visible {
   /* ukazatel je absolutně přes graf, takže musí být uvnitř posuvné plochy */
   -webkit-overflow-scrolling: touch;
 }
+/* ⚠️ TADY BYLO `position: sticky; width: 100%` — a byl to zdroj DVOU chyb:
+ *  1. `sticky` s `left: 0` na prvku, který je v posuvné ploše jediným prvkem
+ *     v toku (graf je absolutní), nemá kam se lepit — prvek zůstane v toku
+ *     a spadne POD graf. Ukazatel se pak kreslil na vlastní plátno pod
+ *     grafem, ne přes něj.
+ *  2. `width: 100%` přebilo šířku nastavenou v JS (např. 2073 px), takže
+ *     plátno ukazatele bylo široké jen jako okno — a protože se jeho obsah
+ *     posouval s grafem, čára seděla jinde než sloupec, na kterém stojíš.
+ * Šířku plátna proto určuje VÝHRADNĚ JS (stejná jako graf) a CSS jen říká,
+ * že je absolutně přes graf. Obojí je ověřené měřením pixelů v prohlížeči
+ * (kontrola-scroll.html). */
 .chart-wrap.scrollable .chart-head {
-  position: sticky; left: 0;
-  width: 100%;
+  position: absolute;
+  left: 0;
+  top: 0;
 }
 
 /* ── přehrávač pod grafem ringu ── */

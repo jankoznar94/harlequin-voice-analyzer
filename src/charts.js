@@ -118,7 +118,12 @@ export function sprGeom(w, h, notes, summary, offX = 0) {
      * kreslil mimo. */
     clipL: offX, clipR: offX + w,
     timeAtX: (px) => ((px + offX - SPR_PAD.l) / plotW) * t1,
-    pxAtTime: (t) => SPR_PAD.l + (t / t1) * plotW - offX,
+    /* Souřadnice v PIXELECH PLÁTNA (bez vlivu posuvu) — tu potřebuje ten, kdo
+     * rozhoduje o posuvu: porovnává ji s `wrap.scrollLeft`. `x()` naproti tomu
+     * vrací souřadnici pro KRESBU (posuv už odečtený), takže se s `scrollLeft`
+     * porovnávat NESMÍ — posuv by se započítal dvakrát a okno by odjíždělo
+     * donekonečna. */
+    pxAtTime: (t) => SPR_PAD.l + (t / t1) * plotW,
   };
 }
 
@@ -190,10 +195,19 @@ export function drawSpecHead(canvas, duration, t) {
  * Geometrie se počítá znovu při každém vykreslení — je to pár desítek čísel
  * nad ~50 tóny, takže je to zdarma, a hlavně se tím nemůže rozejít s grafem
  * po otočení telefonu nebo změně šířky okna.
+ *
+ * ⚠️ **Posuv se tu NESMÍ odečítat.** Plátno ukazatele má stejnou šířku jako
+ * graf a leží v TÉŽE posuvné ploše, takže se posouvá s ním — prohlížeč už
+ * jednou posunul obě plátna. Kdyby se `offX` odečetlo i tady, posun se
+ * započítá dvakrát a čára sedne jinde než sloupec, na kterém stojíš
+ * (přesně to bylo vidět: při odscrollování zmizela mimo okno, i když
+ * geometrie říkala, že je uvnitř). Odečítat posuv mívalo smysl jen u
+ * `position: sticky` plátna, které se neposouvalo — tenhle kód je ověřený
+ * měřením pixelů v prohlížeči (kontrola-scroll.html).
  */
 export function drawSprHead(canvas, notes, summary, t, opts = {}) {
   const { ctx, w, h } = setupOverlay(canvas, SPR_H, opts.width || 0);
-  const g = sprGeom(w, h, notes, summary, opts.offX || 0);
+  const g = sprGeom(w, h, notes, summary);
   if (g) drawPlayhead(ctx, g, t, true);
 }
 
