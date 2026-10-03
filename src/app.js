@@ -8,6 +8,7 @@ import {
   sprGeom, drawSpecHead, drawSprHead, clearHead, SPR_H, SPEC_H,
 } from './charts.js';
 import { initLive } from './live-ui.js';
+import { sniffSampleRate } from './sample-rate.js';
 
 const $ = (id) => document.getElementById(id);
 const HIST_KEY = 'vocal-lab.history.v1';
@@ -118,18 +119,19 @@ async function finishRecord() {
  */
 async function decodeAudio(blob) {
   const ab = await blob.arrayBuffer();
+  const fileRate = sniffSampleRate(ab);          // PŮVODNÍ kmitočet souboru, ne dekódovaný
   const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
   if (OAC) {
     try {
       const off = new OAC(1, 1, 48000);
-      return await off.decodeAudioData(ab.slice(0));
+      return { audio: await off.decodeAudioData(ab.slice(0)), fileRate };
     } catch (e) {
       console.warn('[i] OfflineAudioContext nedekódoval, zkouším AudioContext', e);
     }
   }
   const ctx = new (window.AudioContext || window.webkitAudioContext)();
   try {
-    return await ctx.decodeAudioData(ab.slice(0));
+    return { audio: await ctx.decodeAudioData(ab.slice(0)), fileRate };
   } finally {
     try { await ctx.close(); } catch {}
   }
@@ -138,16 +140,16 @@ async function decodeAudio(blob) {
 async function handleBlob(blob, label) {
   showProgress(0.02, 'Dekóduji zvuk…');
   try {
-    const audio = await decodeAudio(blob);
+    const { audio, fileRate } = await decodeAudio(blob);
     const mono = toMono(audio);
-    runAnalysis(mono, audio.sampleRate, label, blob);
+    runAnalysis(mono, audio.sampleRate, label, blob, fileRate);
   } catch (e) {
     console.error(e);
     // fallback: MediaRecorder často vyrobí webm/opus, který decodeAudioData
     // v některých prohlížečích nepřečte — zkus přes <audio> element
     try {
       const mono = await decodeViaElement(blob);
-      if (mono) return runAnalysis(mono.samples, mono.sampleRate, label, blob);
+      if (mono) return runAnalysis(mono.samples, mono.sampleRate, label, blob, NaN);
     } catch (e2) { console.error(e2); }
     alert('Zvuk se nepodařilo přečíst. Zkus nahrát ve formátu WAV, nebo použij ' +
       '"Načíst soubor".');
@@ -185,7 +187,7 @@ async function decodeViaElement(blob) {
 
 /* ═══════════════════════════════════════ analýza */
 
-function runAnalysis(samples, sampleRate, label, blob) {
+function runAnalysis(samples, sampleRate, label, blob, fileRate = NaN) {
   cancelled = false;
   const fach = $('fach').value;
   showProgress(0.05, 'Spouštím analýzu…');
@@ -198,6 +200,7 @@ function runAnalysis(samples, sampleRate, label, blob) {
     try {
       res = analyze(samples, sampleRate, {
         fach,
+        fileRate,                  // původní kmitočet souboru (dekódování ho přepíše)
         onProgress: (p, msg) => { if (!cancelled) showProgress(p, msg); },
       });
     } catch (e) {
@@ -480,23 +483,32 @@ function unusableText(res) {
       'udržené tóny hlasu. Bývá to řeč, šum, doprovod bez zpěvu, nebo nahrávka kratší než ~2 s. ' +
       'Nahraj souvislý zpívaný tón nebo frázi.';
   }
-  /* Pásmo useknuté SAMOTNÝM vzorkovacím kmitočtem nahrávky — pozná se to tak,
-   * že mez pásma leží hned pod Nyquistovou mezi (sr/2). To není vada záznamu,
-   * jen se z něj výšky nad Nyquist nedozvíme. Rozlišit to musíme, jinak
-   * pošleme člověka hledat kompresi, která tam není. */
-  const sr = res.sample_rate;
-  const lim = res.band && res.band.limit;
-  if (sr && lim === lim && lim > 0.75 * (sr / 2)) {
+  /* Nízký vzorkovací kmitočet NAHRÁVKY — výš než Nyquist v ní fyzicky není.
+   *
+   * PROČ SE TO SEM PŘIDALO (reálná chyba, naměřeno): tenhle případ dřív
+   * propadal do poslední větve s radou „nahraj WAV nebo ve vysokém datovém
+   * toku". U záznamníku v telefonu je to rada, která nemůže pomoct — i WAV
+   * z téhož záznamníku má 16 kHz a ring z něj měřit nelze. Člověk pak hledá
+   * vadu v datovém toku, která tam není (přesně ta chyba, kterou jsme už
+   * jednou opravovali u hlášky o WAV).
+   *
+   * `s.low_rate` je spočítané z PŮVODNÍHO kmitočtu souboru — dekódování ho
+   * přepíše na 48 kHz, takže `res.sample_rate` o skutečné šířce pásma nic
+   * neříká (viz `sniffSampleRate` v app.js). */
+  if (s.low_rate) {
+    const fr = s.file_rate;
     return '<strong>Ring nelze změřit — nahrávka má nízký vzorkovací kmitočet.</strong><br>' +
-      `Zvuk se do analýzy dostal jako ${Math.round(sr / 1000)} kHz, a pásmo 2–4 kHz, ` +
-      `ze kterého se ring měří, tím pádem končí na ~${Math.round(lim)} Hz.<br><br>` +
-      'Tohle není vada zpěvu ani souboru. Bývá to telefon, který zvuk při zpracování ' +
-      'převzorkoval na nižší kmitočet. Zkus to nahrát v aplikaci přímo (mikrofon), ' +
-      'nebo použij soubor, který má 44,1 nebo 48 kHz.';
+      `Zvuk je uložený na ${Math.round(fr / 1000)} kHz, takže v nahrávce nejsou žádné ` +
+      `kmitočty nad ${Math.round(fr / 2)} Hz. Pásmo 2–4 kHz, ze kterého se ring měří, ` +
+      'je tím useknuté.<br><br>' +
+      'Tohle NENÍ vada zpěvu ani souboru a nemá to nic společného s datovým tokem — ' +
+      'takhle záznam uložil záznamník (bývá to nastavení „kvalita záznamu“ nebo úsporný ' +
+      'režim). Zkus v záznamníku nastavit kvalitu na 44,1 nebo 48 kHz, nebo nahrávej ' +
+      'tlačítkem <strong>Nahrávat</strong> přímo v této aplikaci.';
   }
   return '<strong>Ring nelze změřit.</strong><br>' + escapeHtml(s.reason) + '<br><br>' +
     'Rozsah 2–4 kHz, kde se ring měří, je v této nahrávce potlačený. To dělá ' +
-    'silná komprese (nízký datový tok), telefonní přenos nebo historický záznam. ' +
+    'silná komprese (nízký datový tok) nebo historický záznam. ' +
     'Nahrávej WAV nebo ve vysokém datovém toku.';
 }
 

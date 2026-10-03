@@ -199,30 +199,113 @@ export function spectralEnvelope(spec, frac = 0.01) {
 }
 
 /**
+ * Je pásmo 2–4 kHz v nahrávce OPRAVDU potlačené, nebo jen nízko vzorkovaná?
+ *
+ * PROČ NOVÉ MĚŘENÍ (reálná chyba, naměřeno): dosavadní `sprValid` bere
+ * `Math.max(bandwidthLimit(spec), bandwidthLimit(spectralEnvelope(spec)))`
+ * a porovnává s prahem 4100 Hz. Jenže mez pásma **není invariantní vůči
+ * vzorkovacímu kmitočtu**: tentýž zpěv dá na 48 kHz mez 5941 Hz, ale na 16 kHz
+ * (převzorkovaný, obsah jinak totožný) jen 3902 Hz → aplikace odmítne měřit
+ * ring na nahrávce, ve které 2–4 kHz v pořádku JE. Naměřeno na reálné
+ * nahrávce se doprovodem: 48 kHz → 68 tónů, ring 98 %, SPR −13,6 dB;
+ * tentýž obsah na 16 kHz → „Ring nelze změřit". Přitom s otevřenou branou
+ * dá 16 kHz SPR −15,3 dB a ring 94 % — tedy měřit jde, jen to brána zakázala.
+ *
+ * PROČ POMĚR UVNITŘ PÁSMA: profil obálky vztažený k hlasové úrovni
+ * (1–2 kHz) je na vzorkovacím kmitočtu prakticky nezávislý — naměřeno na
+ * tomtéž obsahu: 3,2–3,6 kHz leží na −11,1 dB (48 kHz), −10,9 (16 kHz),
+ * −10,9 (12 kHz). Kdežto skutečně ořezaný zdroj se propadá: brick-wall
+ * 3,4 kHz → −13,9 dB, 3,0 kHz → −15,0 dB, historický záznam Caruso 1902
+ * → −19,7 dB. Práh −12,5 dB tedy oddělí „pásmo je v pořádku" od „pásmo je
+ * opravdu utopené" BEZ ohledu na to, jakým kmitočtem byl soubor nahraný.
+ *
+ * Vrací { cut, rel, reason }. `rel` = úroveň 3,2–3,6 kHz proti 1–2 kHz (dB).
+ */
+export function bandCut(env) {
+  const mean = (a, b) => {
+    let s = 0, n = 0;
+    for (let i = 0; i < env.freq.length; i++) {
+      const f = env.freq[i];
+      if (f >= a && f <= b) { s += env.db[i]; n++; }
+    }
+    return n ? s / n : NaN;
+  };
+  const ref = mean(1000, 2000);          // jmenovatel SPR — úroveň hlasu
+  const hi = mean(3200, 3600);           // horní okraj pásma, kde ring žije
+  if (ref !== ref || hi !== hi) return { cut: false, rel: NaN, reason: 'spektrum nelze vyhodnotit' };
+  const rel = hi - ref;
+  return { cut: rel < -12.5, rel, reason: rel < -12.5 ? 'pásmo 3,2–3,6 kHz je utopené' : 'ok' };
+}
+
+/**
  * Je nahrávka vůbec schopna měřit SPR? (úseknuté pásmo = nesmysl)
  *
  * Pásmo se měří na OBÁLCE spektra, ne na surovém — viz `spectralEnvelope`.
  * Do výsledku jde `limit_raw` (co by vyšlo ze surového spektra), aby se dalo
  * rozlišit „skutečně useknutý zdroj" od „nízkofrekvenční tón přebíjí hlas".
+ *
+ * `opts.fileRate` je PŮVODNÍ vzorkovací kmitočet souboru (hlavička kontejneru).
+ * Dekódování ho přepíše na 48 kHz, takže bez něj se nedá poznat, že nahrávka
+ * byla nahraná na 16 kHz a výš než 8 kHz fyzicky nést nemůže.
  */
-export function sprValid(spec, minHz = 4100) {
+export function sprValid(spec, minHz = 4100, opts = {}) {
   const raw = bandwidthLimit(spec);
   if (isNaN(raw)) return { valid: false, reason: 'spektrum nelze vyhodnotit', limit: NaN, limit_raw: NaN };
-  const lim = bandwidthLimit(spectralEnvelope(spec));
+  const env = spectralEnvelope(spec);
+  const lim = bandwidthLimit(env);
   /* Bereme BLOVĚTVÍ hodnotu (širší z obou), protože každé měření má jiný slepý úhel:
    *  - syrové spektrum nepozná, že vrchol je jen úzký tón doprovodu, a hlásí ořez;
    *  - obálka na nízkém vzorkovacím kmitočtu (málo binů na oktávu) podhodnotí mez.
-   *  Ořezaný zdroj propadne v OBOU (naměřeno: brick-wall 3,4 kHz → 3516 i 3703 Hz). */
+   *  Ořezaný zdroj propadne v OBOU. */
   const limit = Math.max(raw, lim);
+  const fileRate = opts.fileRate;
+  const knownRate = fileRate === fileRate && fileRate > 0;
+
+  /* ── Případ 1: soubor sám nemá na pásmo 2–4 kHz dost kmitočtů ──────────
+   * Nyquistová mez pod prahem znamená, že se ring měřit NEDÁ — a je to vada
+   * ZÁZNAMU (nízký kmitočet), ne zpěvu. Tuhle příčinu musí hláška pojmenovat,
+   * jinak pošle člověka hledat kompresi, která tam není. */
+  if (knownRate && fileRate / 2 < minHz) {
+    return {
+      valid: false,
+      reason: `nahrávka má vzorkovací kmitočet ${Math.round(fileRate / 1000)} kHz, ` +
+        `takže nad ${Math.round(fileRate / 2)} Hz v ní žádné kmitočty nejsou`,
+      limit, limit_raw: raw, low_rate: true, file_rate: fileRate,
+    };
+  }
+
   if (limit < minHz) {
+    /* ── Případ 2: soubor na pásmo MÁ kmitočty, ale pásmo je utopené ──────
+     * Rozhoduje POMĚR uvnitř pásma, ne absolutní mez — ta na vzorkovacím
+     * kmitočtu závisí (viz `bandCut`). Známý kmitočet souboru je tu klíčový:
+     * nahrávka na 16 kHz má nízkou absolutní mez jen proto, že výš nemá
+     * kmitočty, ne proto, že by ji někdo utopil. */
+    if (knownRate) {
+      const cut = bandCut(env);
+      if (cut.cut !== cut.cut) {
+        return { valid: false, reason: 'spektrum nelze vyhodnotit', limit, limit_raw: raw };
+      }
+      if (cut.cut) {
+        return {
+          valid: false,
+          reason: `pásmo 3,2–3,6 kHz je ${Math.abs(cut.rel).toFixed(1)} dB pod úrovní hlasu ` +
+            `(potřeba do −12,5 dB) - SPR nelze měřit`,
+          limit, limit_raw: raw, band_rel: cut.rel,
+        };
+      }
+      return { valid: true, reason: 'ok', limit, limit_raw: raw, band_rel: cut.rel };
+    }
+    /* Kmitočet souboru neznáme (nepoznaná hlavička kontejneru): zůstává
+     * původní absolutní mez. Je přísnější, ale NIKDY nepustí ořezaný zdroj —
+     * u neznámého formátu je bezpečnější směr „radši nezměřit". */
     return {
       valid: false,
       reason: `pásmo useknuto na ~${Math.round(limit)} Hz (potřeba aspoň ${minHz} Hz) - SPR nelze měřit`,
-      limit,
-      limit_raw: raw,
+      limit, limit_raw: raw,
     };
   }
-  return { valid: true, reason: 'ok', limit, limit_raw: raw };
+  return { valid: true, reason: 'ok', limit, limit_raw: raw,
+    band_rel: knownRate ? bandCut(env).rel : NaN };
 }
 
 /* --------------------------------------------------------------- F0 (YIN) -- */
@@ -933,7 +1016,9 @@ export function analyze(samples, sampleRate, opts = {}) {
   // daného úseku, ne skutečnou šířku pásma — a čisté tóny pak propadnou,
   // zatímco zašuměné projdou. Ověřeno na případech se známou pravdou.
   const specFull = ltas(samples, sampleRate);
-  const band = specFull ? sprValid(specFull) : { valid: false, reason: 'spektrum nelze vyhodnotit', limit: NaN };
+  const band = specFull
+    ? sprValid(specFull, 4100, { fileRate: opts.fileRate })
+    : { valid: false, reason: 'spektrum nelze vyhodnotit', limit: NaN };
 
   progress(0.12, 'Sleduji výšku tónu…');
 
@@ -1060,6 +1145,12 @@ function measureNote(samples, sampleRate, times, f0raw, idx, t0, t1, band) {
     spl_dbfs: spl,
     spr: sprVal,
     spr_valid: band.valid, spr_note: band.reason,
+    /* `low_rate` se musí přenést až do tónu — jinak se hláška v UI nedozví,
+     * že ring chybí kvůli vzorkovacímu kmitočtu nahrávky, a poradí hledat
+     * kompresi. `file_rate` je původní kmitočet souboru (hlavička kontejneru),
+     * ne ten, na který ho převedlo dekódování. */
+    low_rate: !!band.low_rate,
+    file_rate: band.file_rate ?? NaN,
     bandwidth_hz: band.limit,
     alpha: alphaRatio(spec),
     fhe: fhe(spec),
@@ -1128,9 +1219,14 @@ export function ringAnalysis(notes, opts = {}) {
   const valid = notes.filter(n => n.spr_valid && n.spr === n.spr);
   if (!valid.length) {
     const why = notes.find(n => !n.spr_valid)?.spr_note || 'neznámý důvod';
+    /* Příčinu ztráty tónů je potřeba předat DÁL, ne jen textem: UI podle
+     * `s.low_rate` pozná, že má radit s kvalitou záznamu v záznamníku,
+     * a ne hledat kompresi (viz `unusableText` v app.js). */
+    const lowRate = notes.find(n => n.low_rate);
     return {
       spr_unusable: true, reason: why,
       n_notes: 0, n_notes_total: notes.length, n_notes_excluded: notes.length,
+      ...(lowRate ? { low_rate: true, file_rate: lowRate.file_rate } : {}),
     };
   }
 

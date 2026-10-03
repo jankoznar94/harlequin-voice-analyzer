@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Hlas">
-<link rel="stylesheet" href="src/style.css?v=14">
+<link rel="stylesheet" href="src/style.css?v=15">
 </head>
 <body>
 
@@ -57,7 +57,22 @@
       <button id="btn-record" class="btn primary" type="button">Nahrávat</button>
       <button id="btn-live" class="btn" type="button">Živě</button>
       <label class="btn" for="file-input">Načíst soubor</label>
-      <input id="file-input" type="file" accept="audio/*" hidden>
+      <!--
+        `accept="audio/*"` je tu ZÁMĚRNĚ vypnuté — jen komentář, ne atribut.
+
+        PROČ (reálná chyba u uživatele): Android mapuje `accept="audio/*"` na
+        systémovou akci „zaznamenej zvuk". Při klepnutí na „Načíst soubor" se
+        proto otevře aplikace ZÁZNAMNÍKU v režimu nahrávání — a v tom se seznam
+        nahraných souborů jen přehraje, ale vybrat a vrátit se z něj nedá.
+        Člověk pak nemá jak dostat existující nahrávku do aplikace.
+
+        Bez `accept` systém nabídne průzkumník souborů i záznamník a výběr
+        existujícího souboru projde. Filtrovat podle typu v prohlížeči ani
+        potřeba není: analýza si se špatným souborem poradí (a když ho nepřečte,
+        řekne to) a `decodeAudio`/`decodeViaElement` zvládne i to, co filtr
+        nezachytí. Ztráta filtru je menší zlo než nefunkční tlačítko.
+      -->
+      <input id="file-input" type="file" hidden>
     </div>
 
     <div id="rec-bar" class="rec hidden">
@@ -323,6 +338,6 @@
 
 <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
-<script type="module" src="src/app.js?v=14"></script>
+<script type="module" src="src/app.js?v=15"></script>
 </body>
 </html>
