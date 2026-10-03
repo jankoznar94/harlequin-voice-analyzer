@@ -14,6 +14,11 @@ import { spawn, spawnSync } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 
+// Matematika osy se bere ze STEJNÉHO modulu, jaký používá kresba — test tak
+// porovnává skutečné pixely s očekávanou polohou podle měřítka, ne s ručně
+// opsanými indexy (ty jsem si napoprvé přečetla obráceně a test lhal).
+const { sprOffset, sprTicks } = await import('../src/live-charts.js');
+
 const ROOT = path.join(import.meta.dirname, '..');
 const PORT = 8139;
 
@@ -106,6 +111,45 @@ try {
     ok('rozkmitaná historie dá vyšší rozsah než plochá',
       (j.sprLine.maxY - j.sprLine.minY) > 3 * (j.sprFlat.maxY - j.sprFlat.minY),
       `rozkmit ${j.sprLine.maxY - j.sprLine.minY} px vs plochá ${j.sprFlat.maxY - j.sprFlat.minY} px`);
+
+    /* ── osa SPR: pásmo −20…−10 dB musí být roztažené ──
+       Tohle je jádro celé úpravy: stejných 10 dB musí v pásmu zabrat výrazně
+       víc místa než mimo něj, jinak je okno, kde se zpěv opravdu pohybuje,
+       zase tenká čára. Lineární rozsah dá obojí stejné → test to odhalí. */
+    const spanBand = j.sprBandSpan.maxY - j.sprBandSpan.minY;
+    const spanBelow = j.sprBelowSpan.maxY - j.sprBelowSpan.minY;
+    ok('10 dB v pásmu −20…−10 zabírá víc místa než 10 dB pod ním',
+      spanBand > spanBelow * 2,
+      `pásmo ${spanBand} px vs mimo ${spanBelow} px`);
+    // 55 % výšky na 10 dB v pásmu proti 25 % na 20 dB pod ním → 4,4×
+    ok('roztažení odpovídá záměru (~4,4×)', Math.abs(spanBand / spanBelow - 4.4) < 1.5,
+      `poměr ${(spanBand / spanBelow).toFixed(2)}×`);
+
+    /* Popisky osy musí ležet přesně podle nelineárního měřítka. Indexovat je
+       ručně se nevyplácí (napoprvé jsem si je přečetla obráceně) — spočítá se
+       očekávaná poloha ze stejné funkce, kterou používá kresba. */
+    const tickDbs = sprTicks().map(t => t.db).sort((a, b) => b - a);   // shora dolů
+    const ys = j.sprGrid.labels;
+    ok('osa má popisek pro každou linku', ys.length === tickDbs.length && j.sprGrid.rows === tickDbs.length,
+      `popisků ${ys.length}, linek ${j.sprGrid.rows}, očekáváno ${tickDbs.length}`);
+    const span = ys[ys.length - 1] - ys[0];
+    let maxErr = 0;
+    tickDbs.forEach((db, i) => { maxErr = Math.max(maxErr, Math.abs(ys[0] + sprOffset(db) * span - ys[i])); });
+    ok('popisky osy leží podle nelineárního měřítka', maxErr <= 2,
+      `největší odchylka ${maxErr.toFixed(1)} px (${tickDbs.join(', ')} dB)`);
+    // Roztažení pásma zhušťuje zbytek osy — popisky se nesmí překrýt. Oko to
+    // na grafu nepozná, ale číslo ano (nejmenší rozestup musí unést výšku textu).
+    ok('popisky osy se nepřekrývají', Math.min(...j.sprLabelGaps) >= 11,
+      `rozestupy ${j.sprLabelGaps.join(', ')} px`);
+    // −15 dB musí ležet uvnitř roztaženého pásma, ne na jeho okraji
+    const yMid = ys[tickDbs.indexOf(-15)];
+    ok('−15 dB leží uvnitř roztaženého pásma',
+      j.sprBandSpan.minY < yMid && yMid < j.sprBandSpan.maxY,
+      `−15 dB v ${yMid}, pásmo ${j.sprBandSpan.minY}–${j.sprBandSpan.maxY}`);
+    // horní okraj plátna není přiříznutý: −40 nesmí ležet na y=0
+    ok('krajní hodnoty zůstávají uvnitř grafu',
+      j.sprLine.minY > 0 && j.sprLine.maxY < c2w * 0 + (j.canvases.c2[1] || 1e9),
+      `y ${j.sprLine.minY}–${j.sprLine.maxY} z výšky ${j.canvases.c2[1]}`);
 
     /* ── úroveň ── */
     const c3w = j.canvases.c3[0];

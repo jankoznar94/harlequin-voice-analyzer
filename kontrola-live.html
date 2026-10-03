@@ -75,6 +75,53 @@ const green = [0x6a, 0x9e, 0x6a];
 const red = [0xb5, 0x67, 0x5e];
 const accent = [0xb8, 0x89, 0x4f];
 const warn = [0xc3, 0x9a, 0x5a];
+const line = [0x3a, 0x33, 0x30];
+
+/** Najde svislé polohy popisků osy (text v levém sloupci) — vrátí jejich středy. */
+function labelRows(cv, xToCss = 34) {
+  const ctx = cv.getContext('2d');
+  const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
+  // Levý sloupec osy je v CSS pixelech; na displeji s dsf 2 je dvakrát širší.
+  // Sonda musí jít VŮČI HUSTOTĚ, jinak na dsf 2 vidí jen začátek kratších
+  // popisků a část jich mine (přesně na to jsem napoprvé naletěla).
+  const scale = cv.width / (cv.clientWidth || cv.width);
+  const xTo = Math.floor(xToCss * scale);
+  const rows = [];
+  for (let y = 0; y < cv.height; y++) {
+    let n = 0;
+    for (let x = 0; x < xTo; x++) {
+      const i = (y * cv.width + x) * 4;
+      if (d[i + 3] > 20) n++;
+    }
+    rows.push(n);
+  }
+  // slij souvislé řádky do jednoho popisku
+  const centers = [];
+  let start = -1;
+  for (let y = 0; y <= rows.length; y++) {
+    const on = y < rows.length && rows[y] > 0;
+    if (on && start < 0) start = y;
+    if (!on && start >= 0) { centers.push((start + y - 1) / 2); start = -1; }
+  }
+  return centers;
+}
+
+/** Spočítá vodorovné linky mřížky — řádek, kde je skoro celá šířka grafu linkové barvy. */
+function countGridRows(cv, rgb, tol = 10) {
+  const ctx = cv.getContext('2d');
+  const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
+  let rows = 0, run = 0;
+  for (let y = 0; y < cv.height; y++) {
+    let n = 0;
+    for (let x = 0; x < cv.width; x++) {
+      const i = (y * cv.width + x) * 4;
+      if (d[i + 3] < 200) continue;
+      if (Math.abs(d[i] - rgb[0]) <= tol && Math.abs(d[i + 1] - rgb[1]) <= tol && Math.abs(d[i + 2] - rgb[2]) <= tol) n++;
+    }
+    if (n > cv.width * 0.7) { run++; if (run === 1) rows++; } else run = 0;
+  }
+  return rows;
+}
 
 const R = {};
 try {
@@ -126,6 +173,31 @@ try {
   R.sprEmpty = { drawn: drawn(c2) };
   log(`SPR prázdná: kresleno ${R.sprEmpty.drawn} px (jen mřížka a popis)`);
 
+  /* ── měřítko osy: pásmo −20…−10 dB musí být výrazně roztažené ──
+     Stejný počet dB (10) musí v pásmu zabrat několikanásobně víc pixelů než
+     pod ním. Kdyby se roztažení ztratilo (nebo rozbilo), obě čísla se srovnají
+     a okno −20…−10 bude zase tenká čára, kvůli které se to celé dělalo. */
+  drawSprHistory(c2, { history: [-20, -19.9, -19.8, -10.2, -10.1, -10], refs: null });
+  const sprBandSpan = findColor(c2, accent, 30);
+  R.sprBandSpan = { minY: sprBandSpan.minY, maxY: sprBandSpan.maxY };
+
+  drawSprHistory(c2, { history: [-40, -39.9, -39.8, -30.2, -30.1, -30], refs: null });
+  const sprBelowSpan = findColor(c2, accent, 30);
+  R.sprBelowSpan = { minY: sprBelowSpan.minY, maxY: sprBelowSpan.maxY };
+  log(`SPR roztažení: 10 dB v pásmu ${sprBandSpan.maxY - sprBandSpan.minY} px, ` +
+      `10 dB pod pásmem ${sprBelowSpan.maxY - sprBelowSpan.minY} px`);
+
+  // kolik vodorovných linek má osa (mimo roztažené pásmo 10 po 10 dB, v pásmu navíc −15 a −5)
+  drawSprHistory(c2, { history: [], refs: null });
+  const labels = labelRows(c2);
+  R.sprGrid = { rows: countGridRows(c2, line), strong: labels.length, midY: labels[3] ?? null,
+                labels: labels.map(v => Math.round(v)) };
+  log(`SPR mřížka: ${R.sprGrid.rows} vodorovných linek, ${R.sprGrid.strong} popisků osy ` +
+      `(y ${labels.map(v => v.toFixed(0)).join(', ')}), −15 dB na y≈${R.sprGrid.midY}`);
+  // Rozestupy popisků: roztažené pásmo zhušťuje zbytek osy, takže se snadno
+  // stane, že se dva popisky překryjí. Hlídá se to číslem, ne okem.
+  R.sprLabelGaps = labels.slice(1).map((v, i) => Math.round(v - labels[i]));
+  log(`SPR rozestupy popisků: ${R.sprLabelGaps.join(', ')} px`);
   /* ── úroveň ── */
   drawLevel(c3, { dbfs: -22, cls: 'ok' });
   R.lvlOk = findColor(c3, green, 40);
