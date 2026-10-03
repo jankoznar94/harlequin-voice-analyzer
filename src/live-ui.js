@@ -89,8 +89,10 @@ function render(ctxData) {
   const { snap, history, fach } = ctxData;
 
   drawTuning(e.tune, {
-    cents: snap.cents, note: snap.note, voiced: snap.voiced,
-    cls: centsClass(snap.cents),
+    // Na ručičku jde VYHLAZENÁ odchylka — surová skáče o desítky centů
+    // (viz CENTS_SMOOTH_ALPHA v live.js). Když vyhlazená není, použije se surová.
+    cents: snap.centsShown ?? snap.cents, note: snap.note, voiced: snap.voiced,
+    cls: centsClass(snap.centsShown ?? snap.cents),
   });
   drawSprHistory(e.spr, {
     history,

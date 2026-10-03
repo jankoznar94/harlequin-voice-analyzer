@@ -5,7 +5,10 @@
 
 const COL = {
   bg: '#231f1c', grid: '#3a3330', text: '#a89f97', textDim: '#7d746d',
-  ok: '#6a9e6a', bad: '#b5675e', accent: '#b8894f', ref: '#6d7f9c',
+  ok: '#6a9e6a', bad: '#b5675e', accent: '#b8894f',
+  // Referenční linky: teplý neutrál. Dřív studená modrá (#6d7f9c) — do teplé
+  // palety nepatřila a popisky byly navíc málo kontrastní.
+  ref: '#8c8078',
   head: '#ece5dd',   // ukazatel přehrávání — světlý neutrál, čitelný přes sloupce
 };
 
@@ -201,10 +204,23 @@ export function drawSpr(canvas, notes, summary, playheadT = null) {
     ctx.fillText(fmtClock(tv), xx - 12, h - padB + 14);
   }
 
-  // pásmo ringu (nad hranicí) jemně zvýraznit
-  if (summary.ring_threshold > lo) {
-    ctx.fillStyle = 'rgba(106,158,106,.07)';
-    ctx.fillRect(padL, y(hi), plotW, y(summary.ring_threshold) - y(hi));
+  // pásma síly hlasu — barevně, aby laik poznal dobrou hodnotu na první pohled.
+  // Rozsah osy je ±10 dB kolem mediánu nahrávky, takže pásma jsou ORIENTAČNÍ
+  // (absolutní hodnota závisí na mikrofonu a vzdálenosti) — proto se kreslí
+  // jen tam, kam se do rozsahu vejdou.
+  // Krytí 0,22: při 0,13 pásma splynula s pozadím a nebyla vidět (změřeno
+  // sondou na pixely — pásma se kreslila, ale lidské oko je nerozlišilo).
+  const bands = [
+    [hi, -13.1, 'rgba(106,158,106,.22)'],    // profesionálové a výš
+    [-13.1, -22.7, 'rgba(195,154,90,.22)'],  // mezi nezpěváky a profesionály
+    [-22.7, lo, 'rgba(181,103,94,.22)'],     // pod nezpěváky
+  ];
+  for (const [from, to, fill] of bands) {
+    const a = Math.max(lo, Math.min(hi, from));
+    const b = Math.max(lo, Math.min(hi, to));
+    if (Math.abs(y(a) - y(b)) < 1) continue;
+    ctx.fillStyle = fill;
+    ctx.fillRect(padL, Math.min(y(a), y(b)), plotW, Math.abs(y(a) - y(b)));
   }
 
   // sloupce: šířka podle skutečné délky tónu, takže mezery v nahrávce jsou vidět
@@ -218,11 +234,16 @@ export function drawSpr(canvas, notes, summary, playheadT = null) {
     ctx.fillRect(xa + (xb - xa - bw) / 2, Math.min(yy, bottom), bw, Math.abs(bottom - yy));
   }
 
-  // referenční čáry
+  // Pásma jsou BARVOU, ne jen čárkovanými linkami — laik z čárkované čáry
+  // nepozná, na které straně je dobrá hodnota. Rozsah osy je ale jen ±10 dB
+  // kolem mediánu nahrávky, takže pásma jsou orientační (závisí na mikrofonu
+  // a vzdálenosti) — což je v grafu přiznané.
+  // Popisky krátké, přímo u čar: delší text se přes okraj grafu ořezával
+  // (viděno na snímku: „nezpěváci −22,7 dB (orie…").
   const refLines = [
-    [summary.ring_threshold, COL.bad, `hranice ringu ${fmt(summary.ring_threshold)} dB`],
-    [-13.1, COL.ref, 'profesionálové −13,1 dB'],
-    [-22.7, COL.ref, 'nezpěváci −22,7 dB'],
+    [-13.1, COL.ref, 'profesionálové'],
+    [-22.7, COL.ref, 'nezpěváci'],
+    [summary.ring_threshold, COL.bad, 'hranice ringu'],
   ];
   ctx.setLineDash([4, 3]);
   for (const [v, c, label] of refLines) {
@@ -230,19 +251,18 @@ export function drawSpr(canvas, notes, summary, playheadT = null) {
     const yy = Math.round(y(v)) + 0.5;
     ctx.strokeStyle = c; ctx.beginPath();
     ctx.moveTo(padL, yy); ctx.lineTo(w - padR, yy); ctx.stroke();
+    // popisek přímo u čáry — krátký, aby se vešel do šířky grafu
+    ctx.fillStyle = c;
+    ctx.fillText(label, padL + 4, yy - 3);
   }
   ctx.setLineDash([]);
 
-  // legenda
-  let ly = padT + 10;
-  for (const [v, c, label] of refLines) {
-    if (v < lo || v > hi) continue;
-    ctx.strokeStyle = c; ctx.beginPath();
-    ctx.moveTo(w - padR - 150, ly - 4); ctx.lineTo(w - padR - 132, ly - 4); ctx.stroke();
-    ctx.fillStyle = COL.textDim;
-    ctx.fillText(label, w - padR - 128, ly);
-    ly += 13;
-  }
+  // Jedna věta místo legendy: popisky jsou u čar, takže legenda byla jen
+  // duplikace — a navíc se ořezávala (delší text přes okraj grafu).
+  ctx.fillStyle = COL.textDim;
+  ctx.textAlign = 'right';
+  ctx.fillText('barvy pásem jsou orientační (závisí na mikrofonu)', w - padR, padT - 3);
+  ctx.textAlign = 'left';
 
   // ukazatel přehrávání — kreslí se až navrch, aby ho sloupce nepřekryly
   if (playheadT !== null) drawPlayhead(ctx, g, playheadT);
@@ -284,6 +304,22 @@ export function drawF1(canvas, notes, hintEl) {
   const x = (i) => padL + (rel.length <= 1 ? plotW / 2
     : (i / (rel.length - 1)) * plotW);
 
+  // Pásma barvou: zelené = v toleranci (ladění drží), oranžové = ještě
+  // snesitelné, červené = rozpadá se. Bez toho laik z čísel nepozná, která
+  // hodnota je dobrá a která už ne.
+  {
+    const seg = (from, to, fill) => {
+      const a = Math.min(from, to), b = Math.max(from, to);
+      const ya = y(Math.min(a, maxV)), yb = y(Math.min(b, maxV));
+      if (Math.abs(ya - yb) < 1) return;
+      ctx.fillStyle = fill;
+      ctx.fillRect(padL, Math.min(ya, yb), plotW, Math.abs(ya - yb));
+    };
+    seg(0, 8, 'rgba(106,158,106,.22)');
+    seg(8, 20, 'rgba(195,154,90,.18)');
+    seg(20, maxV, 'rgba(181,103,94,.18)');
+  }
+
   ctx.strokeStyle = COL.grid; ctx.lineWidth = 1;
   ctx.fillStyle = COL.text;
   for (const t of niceTicks(0, maxV, 4)) {
@@ -293,13 +329,13 @@ export function drawF1(canvas, notes, hintEl) {
   }
   ctx.fillText('%', 6, padT - 3);
 
-  // tolerance
+  // hranice tolerance — popisek slovem, ne jen číslo
   const yt = Math.round(y(8)) + 0.5;
   ctx.setLineDash([4, 3]); ctx.strokeStyle = COL.accent;
   ctx.beginPath(); ctx.moveTo(padL, yt); ctx.lineTo(w - padR, yt); ctx.stroke();
   ctx.setLineDash([]);
   ctx.fillStyle = COL.textDim;
-  ctx.fillText('tolerance 8 %', w - padR - 96, yt - 4);
+  ctx.fillText('nad touto čarou se ladění rozpadá (8 %)', padL + 2, yt - 4);
 
   const bw = Math.max(3, Math.min(18, plotW / Math.max(1, rel.length) * 0.7));
   rel.forEach((n, i) => {

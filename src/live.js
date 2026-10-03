@@ -34,6 +34,25 @@ export const RMS_GATE = 0.010;
 /** Časová konstanta vyhlazení spektra v rámcích (α = 1/K). */
 export const SPEC_ALPHA = 0.12;
 
+/**
+ * Vyhlazení ručičky ladění. Surová výška z jednoho rámce skáče mezi rámci
+ * o desítky centů (naměřeno: medián skoku 31 c, 90. percentil 87 c), protože
+ * vibrato a šum se do 42ms okna promítají naplno. Klouzavý průměr tento
+ * rozkmit srazí na 19 c (90. percentil) při zpoždění ~57 ms.
+ *
+ * Proč EMA (exponenciální) a ne medián: medián posledních N rámců sice cukání
+ * srazí víc, ale na plynulém přechodu (glissando) se „lepí" na starou hodnotu
+ * a reaguje skokem. EMA sleduje změnu spojitě.
+ *
+ * POZOR: vyhlazuje se JEN to, co se zobrazuje. Rozptyl ladění (spread) se
+ * počítá ze SUROVÝCH hodnot — jinak by vyhlazení vibrato uměle zmenšilo
+ * a číslo by lhalo o tom, jak přesně se tón drží.
+ */
+export const CENTS_SMOOTH_ALPHA = 0.35;
+
+/** Přeskočí-li se tón o víc než tohle, vyhlazení se restartuje (nový tón). */
+export const CENTS_RESET_CENTS = 150;
+
 /** Ladění: do kolika centů se to ještě považuje za „v tónu". */
 export const CENTS_OK = 15;
 export const CENTS_MID = 35;
@@ -117,9 +136,10 @@ export function createLiveState(sampleRate = 48000, frameSize = FRAME_SIZE) {
     lastDbfs: -Infinity,
     lastCents: null,
     lastNote: null,
+    lastCentsSmooth: null,  // vyhlazená odchylka — JEN pro zobrazení ručičky
     sprSamples: [],       // historie SPR pro průběžný medián
     fheSamples: [],
-    centsHist: [],        // pro rozptyl ladění
+    centsHist: [],        // pro rozptyl ladění (SUROVÉ hodnoty!)
     peakDbfs: -Infinity,
     startedAt: null,
   };
@@ -164,7 +184,23 @@ export function feedFrame(state, dsp, frame) {
     pitch = centsFromNote(f0raw);
     state.lastCents = pitch.cents;
     state.lastNote = pitch.note;
+    // Rozptyl ladění se počítá ze SUROVÝCH hodnot — vyhlazení by vibrato
+    // uměle zmenšilo a číslo by lhalo o tom, jak přesně se tón drží.
     state.centsHist.push(pitch.cents);
+
+    // Vyhlazení pro ručičku: EMA. Když se tón přeskočí o víc než
+    // CENTS_RESET_CENTS, začíná se od nova — jinak by ručička při novém tónu
+    // dojížděla z předchozí polohy a vypadala rozladěná.
+    const raw = pitch.cents;
+    if (state.lastCentsSmooth === null
+        || Math.abs(raw - state.lastCentsSmooth) > CENTS_RESET_CENTS) {
+      state.lastCentsSmooth = raw;
+    } else {
+      state.lastCentsSmooth += CENTS_SMOOTH_ALPHA * (raw - state.lastCentsSmooth);
+    }
+  } else {
+    // V tichu se vyhlazení restartuje, aby další tón nezačínal na staré hodnotě.
+    state.lastCentsSmooth = null;
   }
 
   state.lastF0 = voiced ? f0raw : 0;
@@ -174,6 +210,7 @@ export function feedFrame(state, dsp, frame) {
     f0: voiced ? f0raw : 0,
     note: pitch.note,
     cents: pitch.cents,
+    centsShown: state.lastCentsSmooth,   // co kreslit na ručičku
     targetHz: pitch.targetHz,
     dbfs,
     voiced,

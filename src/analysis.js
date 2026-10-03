@@ -789,6 +789,83 @@ export const REFS = {
   },
 };
 
+/* ------------------------------------------------------ BARVA HLASU (FHE) -- */
+
+/** České názvy oborů pro texty („pásmo pro tenory"). */
+export const OBOR_PLURAL = {
+  tenor: 'tenory', baryton: 'barytony', bas: 'basy',
+  sopran: 'soprány', alt: 'alty',
+};
+
+/**
+ * Vyhodnotí barvu hlasu (FHE) pro zvolený rozsah nahrávky.
+ *
+ * FHE je frekvence, pod kterou leží polovina energie v pásmu 2–3,6 kHz.
+ * Vyšší = světlejší hlas. Hodnotí se proti pásmu očekávanému pro ROZSAH
+ * NAHRÁVKY (ne pro obor zpěváka), protože pro každý rozsah platí jiná hodnota.
+ *
+ * ⚠️ Pásmo ±1 směrodatná odchylka je ÚZKÉ (tenor ±221 Hz), takže i hlas, který
+ * posluchač označí za úplně normální, do něj často nespadne. Proto se „mimo
+ * pásmo" hlásí jako `mid` (oranžová), NIKDY `bad` — a `jeVada` je vždy false.
+ * Barva hlasu není vada, je to charakter. Navíc u tónů v nízké poloze se
+ * reference na rozsah vůbec nevztahuje (viz past 0 ve skillu: Jan zpívá
+ * baritonovou transpozici árie, ale rozsah nahrávky je „tenor").
+ *
+ * @returns {{hodnocene:boolean, smer:'v_pasmu'|'temnejsi'|'svetlejsi'|null,
+ *            text:string|null, band:number[]|null, cls:'ok'|'mid'|'none'}}
+ */
+export function vyhodnotFhe(fach, fheHz) {
+  const ref = REFS.FHE[fach];
+
+  if (!(fheHz > 0)) {
+    return {
+      hodnocene: false, smer: null, band: ref || null, cls: 'none',
+      text: 'Barvu hlasu počítám z pásma 2–3,6 kHz. Když v nahrávce není dost tónů ' +
+        's dostatečným pásmem, nemám z čeho ji určit.',
+    };
+  }
+  if (!ref) {
+    return {
+      hodnocene: false, smer: null, band: null, cls: 'none',
+      text: 'Pro zvolený rozsah neexistuje referenční pásmo, takže barvu hlasu ' +
+        'nehodnotím. Naměřená hodnota platí: světlejší hlas leží výš.',
+    };
+  }
+
+  const [center, sd] = ref;
+  const d = fheHz - center;
+  const bandText = `pásmo pro ${OBOR_PLURAL[fach] || fach} ` +
+    `${Math.round(center - sd)}–${Math.round(center + sd)} Hz`;
+
+  if (Math.abs(d) <= sd) {
+    return {
+      hodnocene: true, smer: 'v_pasmu', band: ref, cls: 'ok',
+      text: `Barva hlasu odpovídá tomu, co literatura měří u tohoto rozsahu (${bandText}). ` +
+        'Není zvlášť tmavá ani zvlášť světlá — leží tam, kde hlas tohoto rozsahu obvykle bývá.',
+    };
+  }
+  if (d < 0) {
+    return {
+      hodnocene: true, smer: 'temnejsi', band: ref, cls: 'mid',
+      text: 'Víc energie leží v nižší části pásma 2–3,6 kHz, takže hlas zní tmavěji ' +
+        `(kulatěji, měkčeji). Referenční pásmo je ${bandText}. To NENÍ vada — je to ` +
+        'charakter hlasu. U tónů v nízké poloze se reference navíc nevztahuje.',
+    };
+  }
+  return {
+    hodnocene: true, smer: 'svetlejsi', band: ref, cls: 'mid',
+    text: 'Víc energie leží ve vyšší části pásma 2–3,6 kHz, takže hlas zní světleji ' +
+      `(ostřeji, průrazněji). Referenční pásmo je ${bandText}. To NENÍ vada — je to ` +
+      'charakter hlasu.',
+  };
+}
+
+/** Krátká slovní značka pro ukazatel (nahoře velkým písmem). */
+export function fheLabel(v) {
+  if (!v || !v.hodnocene) return '—';
+  return { v_pasmu: 'V pásmu', temnejsi: 'Temnější', svetlejsi: 'Světlejší' }[v.smer] || '—';
+}
+
 /* -------------------------------------------------------------- HLAVNÍ API - */
 
 /**

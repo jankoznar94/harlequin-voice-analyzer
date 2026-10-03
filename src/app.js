@@ -2,7 +2,7 @@
  * Analýza zpěvního hlasu — hlavní logika aplikace.
  * Nahrávání/načtení → analýza v prohlížeči → výsledky → historie.
  */
-import { analyze, REFS, czPlural } from './analysis.js';
+import { analyze, REFS, czPlural, vyhodnotFhe, fheLabel } from './analysis.js';
 import {
   drawSpr, drawF1, drawSpec, drawTrend, fmt,
   sprGeom, drawSpecHead, drawSprHead, clearHead, SPR_H, SPEC_H,
@@ -240,18 +240,21 @@ function showResult(res, samples, sampleRate, label, secs) {
         ? 'Většinou ano, ale najdou se tóny, kde se barva láme. Podívej se níž, na kterých místech to je.'
         : 'Ring se na mnoha tónech láme. Hledej, co ty tóny mají společného — výšku, hlasitost nebo samohlásku.');
 
-  /* ── ukazatel 2: síla ringu (proti literatuře, orientační) ─────────── */
+  /* ── ukazatel 2: síla hlasu (proti literatuře, orientační) ─────────── */
   const lvl = {
-    profesionalni: ['Silný', 'ok',
-      'Tato hladina odpovídá tomu, co literatura měří u profesionálních zpěváků.'],
+    profesionalni: ['Silná', 'ok',
+      'Síla hlasu odpovídá tomu, co literatura měří u profesionálních zpěváků.'],
     mezi: ['Střední', 'mid',
-      'Mezi nezpěváky a profesionály. Prostor na zlepšení je v hlasitosti a opoře — ' +
-      'síla ringu jde nahoru s hlasitostí, ne s tlačením na hlas.'],
-    pod_nezpevakem: ['Slabý', 'bad',
-      'Hladina je pod tím, co literatura měří i u nezpěváků. Bývá to malá hlasitost ' +
+      'Mezi nezpěváky a profesionály. Prostor na zlepšení je v opoře a hlasitosti — ' +
+      'síla jde nahoru s hlasitostí, ne s tlačením na hlas.'],
+    pod_nezpevakem: ['Slabá', 'bad',
+      'Síla je pod tím, co literatura měří i u nezpěváků. Bývá to malá hlasitost ' +
       'nebo mikrofon daleko od úst — zkontroluj vzdálenost, než začneš soudit hlas.'],
   }[s.level] || ['—', 'none', ''];
   setKpi('k-level', lvl[0], `SPR ${fmt(s.spr_median, 1)} dB (medián)`, lvl[1], 'k-level-d', lvl[2]);
+
+  /* ── ukazatel 2b: barva hlasu (FHE) ────────────────────────────────── */
+  setFheKpi(res.fach, s.fhe_median);
 
   /* ── ukazatel 3: ladění vysokých tónů ──────────────────────────────── */
   if (s.f1_aligned_pct === null) {
@@ -361,6 +364,19 @@ function setKpi(id, value, sub, cls, descId, desc) {
   }
 }
 
+/**
+ * Ukazatel barvy hlasu (FHE).
+ *
+ * Vlastní vyhodnocení je v analysis.js (`vyhodnotFhe`) — tam se dá testovat
+ * bez prohlížeče. Tady se jen předá do UI. Důvod: logika, která rozhoduje
+ * o barvě hlasu, nesmí být schovaná v app.js, kam se testy nedostanou.
+ */
+function setFheKpi(fach, fhe) {
+  const v = vyhodnotFhe(fach, fhe);
+  const sub = fhe > 0 ? `FHE ${Math.round(fhe)} Hz` : 'v nahrávce se barva hlasu změřit nedala';
+  setKpi('k-fhe', fheLabel(v), sub, v.cls, 'k-fhe-d', v.text);
+}
+
 function verdict(res) {
   const s = res.summary;
   const parts = [];
@@ -377,14 +393,25 @@ function verdict(res) {
 
   // 2) je ta hladina vůbec dobrá? (jiná otázka než 1)
   const lvlText = {
-    profesionalni: 'Síla ringu odpovídá profesionálům.',
-    mezi: 'Síla ringu je mezi nezpěváky a profesionály — prostor je v opoře a hlasitosti.',
-    pod_nezpevakem: 'Síla ringu je pod úrovní nezpěváků. Nejdřív zkontroluj vzdálenost mikrofonu a hlasitost.',
+    profesionalni: 'Síla hlasu odpovídá profesionálům.',
+    mezi: 'Síla hlasu je mezi nezpěváky a profesionály — prostor je v opoře a hlasitosti.',
+    pod_nezpevakem: 'Síla hlasu je pod úrovní nezpěváků. Nejdřív zkontroluj vzdálenost mikrofonu a hlasitost.',
   }[s.level] || '';
   parts.push(lvlText);
 
   if (s.dropouts && s.dropouts.length) {
     parts.push(`Vrátit se na ${s.dropouts.length} ${czPlural(s.dropouts.length, 'místo', 'místa', 'míst')} — najdeš ${czPlural(s.dropouts.length, 'ho', 'je', 'je')} v grafu níž podle času.`);
+  }
+
+  // Barva hlasu — jen popis směru, NIKDY soud o kvalitě hlasu. Mimo referenční
+  // pásmo to není vada (pásmo je ±1 směrodatná odchylka, tedy úzké).
+  const fheRefs = { tenor: [2705, 221], baryton: [2454, 206], bas: [2384, 164], sopran: [3092, 284] };
+  const fr = fheRefs[res.fach];
+  if (fr && s.fhe_median > 0) {
+    const dBand = s.fhe_median - fr[0];
+    parts.push(Math.abs(dBand) <= fr[1]
+      ? 'Barva hlasu leží v pásmu obvyklém pro tento rozsah.'
+      : `Barva hlasu je ${dBand < 0 ? 'temnější' : 'světlejší'}, než je pro tento rozsah obvyklé — to je charakter hlasu, ne vada.`);
   }
 
   if (s.f1_aligned_pct !== null && s.f1_aligned_pct < 60) {
@@ -713,7 +740,7 @@ function makeMarkdown() {
   } else {
     L.push(`- Vyrovnanost: **${s.notes_with_ring}/${s.n_notes}** tónů ` +
       `(${s.ring_consistency_pct.toFixed(1)} %) — na kolika tónech se barva neláme`);
-    L.push(`- Úroveň (proti literatuře): **${s.level}**, SPR medián **${fmt(s.spr_median, 2)} dB** ` +
+    L.push(`- Síla hlasu (proti literatuře): **${s.level}**, SPR medián **${fmt(s.spr_median, 2)} dB** ` +
       `(${s.pct_above_ref.toFixed(0)} % tónů nad ${s.ref_threshold} dB)`);
     L.push(`- Rozptyl ± ${fmt(s.spr_sd, 2)} dB, rozsah ${fmt(s.spr_min, 1)} až ${fmt(s.spr_max, 1)} dB`);
     L.push(`- Práh výpadku ${fmt(s.ring_threshold, 1)} dB (${s.threshold_method})`);
