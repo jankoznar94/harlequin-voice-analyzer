@@ -471,9 +471,11 @@ function showResult(res, samples, sampleRate, label, secs) {
       if (cls) td.className = cls;
       return td;
     };
+    // Vyřazený tón (moc krátký / moc tichý) NENÍ výpadek — v tabulce se to musí
+    // poznat stejně jako v grafu, jinak si obojí odporuje.
     const ring = document.createElement('td');
-    ring.textContent = n.ring_ok ? 'ANO' : 'NE';
-    ring.className = n.ring_ok ? 'ok' : 'bad';
+    ring.textContent = n.ring_dropout ? 'NE' : n.ring_ok ? 'ANO' : '—';
+    ring.className = n.ring_dropout ? 'bad' : n.ring_ok ? 'ok' : 'excl';
     tr.append(
       cell(n.idx),
       Object.assign(document.createElement('td'), { textContent: n.note }),
