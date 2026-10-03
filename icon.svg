@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#1a1715"/>
+  <!-- tři harmonické pruhy: fundament + pásmo zpěváckého formantu -->
+  <rect x="96" y="300" width="320" height="26" rx="13" fill="#b8894f"/>
+  <rect x="96" y="252" width="320" height="18" rx="9" fill="#8a6a45"/>
+  <rect x="96" y="212" width="320" height="12" rx="6" fill="#5d4a35"/>
+  <!-- zvýrazněné pásmo ringu 2,5-3,2 kHz -->
+  <rect x="96" y="150" width="320" height="34" rx="17" fill="#6a9e6a"/>
+  <rect x="96" y="110" width="320" height="10" rx="5" fill="#3d573d"/>
+</svg>

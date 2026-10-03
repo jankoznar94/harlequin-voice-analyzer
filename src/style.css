@@ -1,0 +1,371 @@
+/* Analýza zpěvního hlasu — plochý, tmavě neutrální vzhled.
+   Bez hover/focus efektů (mobilní PWA): stav jen při kliknutí. Bez glow. */
+
+:root {
+  --bg:        #1a1715;
+  --bg-soft:   #231f1c;
+  --bg-input:  #2a2522;
+  --line:      #3a3330;
+  --fg:        #e8e2dc;
+  --fg-dim:    #a89f97;
+  --fg-mute:   #7d746d;
+  --accent:    #b8894f;
+  --ok:        #6a9e6a;
+  --bad:       #b5675e;
+  --warn:      #c39a5a;
+  --radius:    6px;
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+main { max-width: 780px; margin: 0 auto; padding: 0 16px 40px; }
+
+/* ── hlavička ── */
+.hdr {
+  max-width: 780px; margin: 0 auto;
+  padding: 28px 16px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.hdr h1 { margin: 0 0 6px; font-size: 24px; font-weight: 600; letter-spacing: .2px; }
+.hdr-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.hdr-row h1 { margin: 0; }
+.sub { margin: 0; color: var(--fg-dim); font-size: 14px; }
+
+h2 { font-size: 18px; font-weight: 600; margin: 0 0 10px; }
+h3 { font-size: 15px; font-weight: 600; margin: 26px 0 8px; color: var(--fg); }
+
+/* ── panely ── */
+.panel {
+  margin: 22px 0;
+  padding: 20px 0;
+  border-bottom: 1px solid var(--line);
+}
+.panel:last-of-type { border-bottom: 0; }
+
+.hidden { display: none !important; }
+
+/* ── formulářové prvky ── */
+.row { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+label { font-size: 14px; color: var(--fg-dim); }
+
+select {
+  width: 100%;
+  padding: 13px 12px;
+  font-size: 16px;
+  color: var(--fg);
+  background: var(--bg-input);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--fg-mute) 50%),
+    linear-gradient(135deg, var(--fg-mute) 50%, transparent 50%);
+  background-position: calc(100% - 20px) 22px, calc(100% - 15px) 22px;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+/* ── tlačítka (stav jen při stisku, žádný hover) ── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 50px;
+  padding: 0 20px;
+  font-size: 16px;
+  font-family: inherit;
+  color: var(--fg);
+  background: var(--bg-input);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  cursor: pointer;
+  text-align: center;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #1a1715; font-weight: 600; }
+.btn.ghost { background: transparent; color: var(--fg-dim); }
+.btn:active { transform: translateY(1px); }
+.btn[disabled] { opacity: .45; }
+
+.link {
+  background: none; border: 0; padding: 0;
+  color: var(--fg-mute); font: inherit; font-size: 14px;
+  text-decoration: underline; cursor: pointer;
+}
+
+.actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0; }
+.actions .btn { flex: 1 1 150px; }
+
+select:focus-visible, .btn:focus-visible, .link:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+
+/* ── nápověda ── */
+.hint { color: var(--fg-dim); font-size: 13.5px; margin: 8px 0; }
+.meta { color: var(--fg-mute); font-size: 13px; margin: 0 0 18px; }
+
+.tips { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 14px; }
+.tips summary { cursor: pointer; color: var(--fg-dim); font-size: 14px; }
+.tips ul { margin: 12px 0 0; padding-left: 20px; color: var(--fg-dim); font-size: 13.5px; }
+.tips li { margin-bottom: 7px; }
+.tips strong { color: var(--fg); font-weight: 600; }
+
+/* ── nahrávání ── */
+.rec {
+  display: flex; align-items: center; gap: 12px;
+  margin-top: 16px; padding: 14px;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.rec .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); flex: none; }
+#rec-time { font-variant-numeric: tabular-nums; font-size: 15px; min-width: 46px; }
+.lvl { flex: 1; height: 6px; background: var(--bg-input); border-radius: 3px; overflow: hidden; }
+.lvl::after {
+  content: ''; display: block; height: 100%; width: var(--lvl, 0%);
+  background: var(--ok); transition: width .08s linear;
+}
+
+/* ── průběh ── */
+.bar { height: 6px; background: var(--bg-input); border-radius: 3px; overflow: hidden; margin: 14px 0; }
+.bar-fill { height: 100%; width: 0; background: var(--accent); transition: width .18s ease; }
+
+/* ── KPI ── */
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 18px;
+}
+.kpi { background: var(--bg-soft); padding: 16px 14px; display: flex; flex-direction: column; gap: 3px; }
+/* ukazatele s lidským vysvětlením: jeden sloupec, text má místo */
+.kpi.wide { grid-column: 1 / -1; padding: 18px 16px; }
+.kpi-v { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.kpi-l { font-size: 12.5px; color: var(--fg-dim); }
+.kpi-s { font-size: 12px; color: var(--fg-mute); }
+.kpi-d {
+  font-size: 13.5px; line-height: 1.55; color: var(--fg-dim);
+  margin: 8px 0 0; max-width: 62ch;
+}
+.kpi.wide .kpi-v { font-size: 30px; }
+.kpi-v.ok  { color: var(--ok); }
+.kpi-v.bad { color: var(--bad); }
+.kpi-v.mid { color: var(--warn); }
+
+/* vysvětlující odstavec pod ukazateli */
+.note {
+  font-size: 13.5px; line-height: 1.6; color: var(--fg-dim);
+  padding: 12px 14px; margin: 0 0 18px;
+  border: 1px solid var(--line); border-radius: var(--radius);
+}
+.note strong { color: var(--fg); font-weight: 600; }
+
+.verdict {
+  font-size: 15px; line-height: 1.6;
+  padding: 14px 16px; margin: 0 0 18px;
+  background: var(--bg-soft);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+.warn, .warn-soft {
+  padding: 14px 16px; font-size: 14px; line-height: 1.55;
+  border-radius: var(--radius); margin: 0 0 18px;
+}
+.warn { background: #33241f; border: 1px solid #5a3a30; color: #e8c9c0; }
+.warn-soft { background: var(--bg-soft); border: 1px solid #5a4a30; color: #dcc9a8; }
+
+/* ── grafy ── */
+.chart {
+  width: 100%; display: block; margin: 10px 0 4px;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.chart.tall { height: 300px; }
+
+/* Graf + průhledné plátno s ukazatelem přehrávání přes něj.
+   Ukazatel se hýbe 60× za sekundu, kdežto graf se kreslí jednou — překreslovat
+   spektrogram by na telefonu zadrhlo, proto leží ukazatel na vlastním plátně. */
+.chart-wrap { position: relative; margin: 10px 0 4px; }
+.chart-wrap .chart { margin: 0; }
+.chart-wrap .chart-head {
+  position: absolute; inset: 0;
+  width: 100%; height: 230px;
+  display: block;
+  pointer-events: none;   /* kliky jdou na graf pod ukazatelem */
+}
+.chart-wrap .chart-head.tall { height: 300px; }
+
+/* ── přehrávač pod grafem ringu ── */
+.player {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 14px 0 6px;
+}
+.player .btn.icon { width: 50px; min-height: 50px; }
+.ptime {
+  font-variant-numeric: tabular-nums; font-size: 14px; color: var(--fg-dim);
+  min-width: 92px;
+}
+.btn.loop { min-height: 50px; padding: 0 14px; font-size: 14px; }
+.btn.loop[aria-pressed="true"] {
+  background: var(--accent); border-color: var(--accent); color: #1a1715; font-weight: 600;
+}
+.seek {
+  flex: 1 1 100%; width: 100%; margin: 2px 0 0;
+  -webkit-appearance: none; appearance: none;
+  height: 26px; background: transparent; cursor: pointer;
+}
+.seek::-webkit-slider-runnable-track { height: 4px; background: var(--bg-input); border-radius: 2px; }
+.seek::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 18px; height: 18px; margin-top: -7px;
+  background: var(--accent); border-radius: 50%;
+}
+.seek::-moz-range-track { height: 4px; background: var(--bg-input); border-radius: 2px; }
+.seek::-moz-range-thumb {
+  width: 18px; height: 18px; border: 0; background: var(--accent); border-radius: 50%;
+}
+
+/* Malý displej: čas a tlačítka se vejdou na jeden řádek, lišta pod nimi. */
+@media (max-width: 420px) {
+  .ptime { min-width: 84px; }
+  .btn.loop { padding: 0 10px; font-size: 13px; }
+}
+
+/* ── tabulky ── */
+.tbl-wrap { overflow-x: auto; margin: 10px 0; border: 1px solid var(--line); border-radius: var(--radius); }
+table { border-collapse: collapse; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }
+th, td { padding: 8px 10px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--line); }
+th {
+  background: var(--bg-soft); color: var(--fg-dim); font-weight: 600;
+  position: sticky; top: 0; font-size: 12px;
+}
+th:nth-child(1), td:nth-child(1), th:nth-child(2), td:nth-child(2) { text-align: left; }
+tbody tr:last-child td { border-bottom: 0; }
+td.ok  { color: var(--ok); font-weight: 600; }
+td.bad { color: var(--bad); font-weight: 600; }
+tr.dropout td { background: #2a1f1c; }
+
+/* ── reference ── */
+.refs dl { display: grid; grid-template-columns: auto 1fr; gap: 5px 18px; margin: 0 0 16px; font-size: 14px; }
+.refs dt { color: var(--fg-dim); }
+.refs dd { margin: 0; font-variant-numeric: tabular-nums; }
+.refs em { color: var(--fg-dim); }
+
+/* ── patička ── */
+.ftr {
+  max-width: 780px; margin: 0 auto; padding: 24px 16px 40px;
+  border-top: 1px solid var(--line);
+  color: var(--fg-mute); font-size: 13px;
+}
+.ftr p { margin: 0 0 8px; }
+/* Verze, která PRÁVĚ BĚŽÍ — aby se dalo poznat, že aktualizace proběhla.
+   Bez toho uživatel po kliku nemá jak zjistit, jestli se něco stalo. */
+.ftr-ver { font-variant-numeric: tabular-nums; }
+
+/* ── aktualizace aplikace (service worker) ── */
+
+/* Tlačítko s ikonou — čtvercové, stejné barvy a rádiusu jako ostatní tlačítka.
+   Bez hover efektu (mobilní PWA), stav jen při stisku. */
+.btn.icon {
+  min-height: 44px;
+  width: 44px;
+  padding: 0;
+  flex: 0 0 auto;
+}
+
+/* Spinner — točí se, dokud se nová verze stahuje. Jen animace rotace,
+   žádný glow. */
+.spinner {
+  width: 16px; height: 16px; border-radius: 50%;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
+
+/* Hlášení výsledku — ploché, bez stínu a glow, dole nad bezpečnou zónou. */
+.toast {
+  position: fixed;
+  left: 50%; bottom: calc(24px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 200;
+  max-width: calc(100vw - 32px);
+  background: var(--bg-input);
+  border: 1px solid var(--line);
+  color: var(--fg);
+  border-radius: var(--radius);
+  padding: 12px 18px;
+  font-size: 14px;
+  text-align: center;
+}
+.toast.hidden { display: none; }
+
+@media (max-width: 420px) {
+  .actions .btn { flex: 1 1 100%; }
+  .kpi-v { font-size: 22px; }
+}
+
+/* ── živý režim ───────────────────────────────────────────────────────────── */
+/* Dvě plátna vedle sebe až od šířky, kde se ještě vejdou; na telefonu pod sebe.
+   Bez hover/focus efektů (mobilní PWA) — stav jen při kliknutí. */
+.live-grid {
+  display: grid; gap: 10px;
+  grid-template-columns: 1fr;
+  margin: 14px 0;
+}
+@media (min-width: 560px) {
+  .live-grid { grid-template-columns: 1fr 1fr; }
+}
+.live-box {
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 10px 8px;
+}
+.live-lbl {
+  display: block;
+  color: var(--fg-dim); font-size: 12px; letter-spacing: .3px;
+  margin-bottom: 4px;
+}
+.live-box .chart { width: 100%; display: block; }
+.live-note { margin: 6px 0 0; font-size: 11px; line-height: 1.4; }
+
+.live-nums {
+  display: grid; gap: 8px;
+  grid-template-columns: repeat(2, 1fr);
+  margin: 12px 0;
+}
+@media (min-width: 560px) {
+  .live-nums { grid-template-columns: repeat(5, 1fr); }
+}
+.live-num {
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  display: flex; flex-direction: column; gap: 2px;
+  min-width: 0;
+}
+.live-k { color: var(--fg-mute); font-size: 11px; }
+.live-num strong {
+  font-size: 17px; font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}

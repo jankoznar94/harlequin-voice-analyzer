@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1a1715">
+<meta name="description" content="Akustická analýza zpěvního hlasu — ring, formanty a barva hlasu. Vše počítáno v prohlížeči, nahrávky nikam neodcházejí.">
+<title>Analýza zpěvního hlasu</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Hlas">
+<link rel="stylesheet" href="src/style.css?v=12">
+</head>
+<body>
+
+<header class="hdr">
+  <div class="hdr-row">
+    <h1>Analýza zpěvního hlasu</h1>
+    <button id="btn-update" class="btn icon" type="button"
+            title="Zkontrolovat novou verzi aplikace" aria-label="Zkontrolovat novou verzi aplikace">
+      <span id="upd-icon" aria-hidden="true">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/>
+        </svg>
+      </span>
+    </button>
+  </div>
+  <p class="sub">Ring, formanty a barva hlasu. Vše se počítá u tebe v prohlížeči —
+     nahrávky nikam neodcházejí.</p>
+</header>
+
+<main>
+
+  <!-- ─────────── VSTUP ─────────── -->
+  <section id="panel-input" class="panel">
+    <div class="row">
+      <label for="fach">Rozsah nahrávky</label>
+      <select id="fach">
+        <option value="tenor" selected>Tenor (C3–E5)</option>
+        <option value="baryton">Baryton (G2–B4)</option>
+        <option value="bas">Bas (E2–G4)</option>
+        <option value="alt">Alt (F3–A5)</option>
+        <option value="sopran">Soprán (C4–D6)</option>
+        <option value="vse">Bez filtru (vše)</option>
+      </select>
+    </div>
+    <p class="hint" id="fach-hint">Vyber rozsah, ve kterém se nahrávka pohybuje —
+       ne podle toho, jaký jsi obor. Tóny mimo rozsah se vyřadí, aby analýza
+       nechytala doprovod nebo orchestr. Baritonová transpozice árie se tedy
+       měří jako tenor, pokud tóny leží v tenorovém rozsahu.</p>
+
+    <div class="actions">
+      <button id="btn-record" class="btn primary" type="button">Nahrávat</button>
+      <button id="btn-live" class="btn" type="button">Živě</button>
+      <label class="btn" for="file-input">Načíst soubor</label>
+      <input id="file-input" type="file" accept="audio/*" hidden>
+    </div>
+
+    <div id="rec-bar" class="rec hidden">
+      <span class="dot" aria-hidden="true"></span>
+      <span id="rec-time">0:00</span>
+      <span id="rec-level" class="lvl" aria-hidden="true"></span>
+      <button id="btn-stop" class="btn primary" type="button">Ukončit nahrávání</button>
+    </div>
+
+    <details class="tips">
+      <summary>Jak nahrávat, aby čísla něco znamenala</summary>
+      <ul>
+        <li><strong>Vzdálenost mikrofonu vždy stejná</strong> — asi 30 cm od úst.
+            Jiná vzdálenost = jiná čísla, i když zpíváš stejně.</li>
+        <li><strong>Nekomprimovaný formát</strong> (WAV), pokud to jde. Komprese
+            (m4a, opus, mp3) rozbíjí spektrum nad 4 kHz.</li>
+        <li><strong>Vypni automatické zesílení</strong> (AGC) v nastavení telefonu.</li>
+        <li><strong>Srovnávej jen sám sebe</strong>, stejným mikrofonem a ve stejné
+            místnosti. Srovnávat s cizí nahrávkou nemá smysl.</li>
+      </ul>
+    </details>
+  </section>
+
+  <!-- ─────────── ŽIVĚ ─────────── -->
+  <section id="panel-live" class="panel hidden">
+    <div class="hdr-row">
+      <h2>Živě</h2>
+      <span id="live-engine" class="hint"></span>
+    </div>
+    <p class="hint">Zpívej a sleduj, co se děje. Čísla jsou orientační —
+       rozhoduje poslech. Podrobné vyhodnocení (vyrovnanost ringu mezi tóny) umí
+       jen analýza celé nahrávky.</p>
+
+    <div id="live-warn" class="warn warn-soft hidden"></div>
+
+    <div class="live-grid">
+      <div class="live-box">
+        <span class="live-lbl">Výška a ladění</span>
+        <canvas id="c-live-tune" class="chart" height="120"></canvas>
+      </div>
+      <div class="live-box">
+        <span class="live-lbl">Síla hlasu (SPR)</span>
+        <canvas id="c-live-spr" class="chart" height="120"></canvas>
+        <p class="hint live-note">Není to verdikt „má/nemá ring" — jen orientace proti
+           literatuře. Rozhoduje vyrovnanost mezi tóny, a tu pozná až celá nahrávka.</p>
+      </div>
+      <div class="live-box">
+        <span class="live-lbl">Úroveň</span>
+        <canvas id="c-live-level" class="chart" height="90"></canvas>
+      </div>
+      <div class="live-box">
+        <span class="live-lbl">Barva hlasu (FHE)</span>
+        <canvas id="c-live-fhe" class="chart" height="90"></canvas>
+      </div>
+    </div>
+
+    <div class="live-nums">
+      <div class="live-num"><span class="live-k">tón</span><strong id="lv-note">—</strong></div>
+      <div class="live-num"><span class="live-k">odchylka</span><strong id="lv-cents">—</strong></div>
+      <div class="live-num"><span class="live-k">výška</span><strong id="lv-f0">—</strong></div>
+      <div class="live-num"><span class="live-k">SPR teď</span><strong id="lv-spr">—</strong></div>
+      <div class="live-num"><span class="live-k">SPR medián</span><strong id="lv-sprmed">—</strong></div>
+      <div class="live-num"><span class="live-k">FHE</span><strong id="lv-fhe">—</strong></div>
+      <div class="live-num"><span class="live-k">úroveň</span><strong id="lv-lvl">—</strong></div>
+      <div class="live-num"><span class="live-k">rozptyl ladění</span><strong id="lv-spread">—</strong></div>
+      <div class="live-num"><span class="live-k">zpíváno</span><strong id="lv-pct">—</strong></div>
+      <div class="live-num"><span class="live-k">doba</span><strong id="lv-time">0:00</strong></div>
+    </div>
+
+    <div class="actions">
+      <button id="btn-live-stop" class="btn primary" type="button">Ukončit</button>
+      <button id="btn-live-save" class="btn" type="button">Uložit do historie</button>
+    </div>
+
+    <details class="tips">
+      <summary>Jak živý režim čteš</summary>
+      <ul>
+        <li><strong>Ručička ladění</strong> — čím blíž ke středu, tím přesněji sedíš
+            v tónu. Zelená znamená do 15 centů, oranžová do 35, červená víc.</li>
+        <li><strong>Rozptyl ladění</strong> — jak moc se výška třese. Malý rozptyl =
+            stabilní tón. Roste s vibratem, a to je správně.</li>
+        <li><strong>SPR</strong> — sleduj, jak se hýbe při změně hlasitosti a
+            samohlásky. Ring jde nahoru s oporou, ne s tlačením.</li>
+        <li><strong>Prohlížeč utlumí zvuk</strong>, když přepneš na jinou kartu nebo
+            zhasne displej. Měření se v tu chvíli zastaví — není to vada aplikace.</li>
+      </ul>
+    </details>
+  </section>
+
+  <!-- ─────────── PRŮBĚH ─────────── -->
+  <section id="panel-progress" class="panel hidden">
+    <p id="prog-text">Zpracovávám…</p>
+    <div class="bar"><div id="prog-fill" class="bar-fill"></div></div>
+    <button id="btn-cancel" class="btn ghost" type="button">Zrušit</button>
+  </section>
+
+  <!-- ─────────── VÝSLEDKY ─────────── -->
+  <section id="panel-result" class="panel hidden">
+    <h2 id="r-title">Výsledek</h2>
+    <p class="meta" id="r-meta"></p>
+
+    <div id="r-unusable" class="warn hidden"></div>
+
+    <div id="r-body">
+      <p class="verdict" id="r-verdict"></p>
+
+      <div class="kpis">
+        <div class="kpi wide">
+          <span class="kpi-v" id="k-ring">—</span>
+          <span class="kpi-l">Ring drží na tolika tónech</span>
+          <span class="kpi-s" id="k-ring-s"></span>
+          <p class="kpi-d" id="k-ring-d"></p>
+        </div>
+        <div class="kpi wide">
+          <span class="kpi-v" id="k-level">—</span>
+          <span class="kpi-l">Síla hlasu</span>
+          <span class="kpi-s" id="k-level-s"></span>
+          <p class="kpi-d" id="k-level-d"></p>
+        </div>
+        <div class="kpi wide">
+          <span class="kpi-v" id="k-fhe">—</span>
+          <span class="kpi-l">Barva hlasu</span>
+          <span class="kpi-s" id="k-fhe-s"></span>
+          <p class="kpi-d" id="k-fhe-d"></p>
+        </div>
+        <div class="kpi wide">
+          <span class="kpi-v" id="k-f1">—</span>
+          <span class="kpi-l">Ladění vysokých tónů</span>
+          <span class="kpi-s" id="k-f1-s"></span>
+          <p class="kpi-d" id="k-f1-d"></p>
+        </div>
+        <div class="kpi wide">
+          <span class="kpi-v" id="k-count">—</span>
+          <span class="kpi-l">Změřeno tónů</span>
+          <span class="kpi-s" id="k-count-s"></span>
+          <p class="kpi-d" id="k-count-d"></p>
+        </div>
+      </div>
+
+      <div class="note">
+        <strong>Jak to číst:</strong> „Ring drží" znamená, že se tón svou barvou
+        neodchyluje od ostatních — přesně to je cíl, protože ring má být na
+        <em>každém</em> tónu. „Síla hlasu" říká, jak je na tom hlas jako takový,
+        ve srovnání s tím, co je známo o zpěvácích obecně. Ty dvě věci mohou být
+        rozdílné: rovnoměrně slabý hlas má ring „držící", ale slabý.
+      </div>
+
+      <p class="warn-soft hidden" id="r-dropouts"></p>
+
+      <h3>Kde se ring ztrácí</h3>
+      <p class="hint">Každý sloupec je jeden tón. Vodorovná osa je <strong>čas
+         v nahrávce</strong> — najdi v ní přesné místo, kde je sloupec červený,
+         a vrať se tam.</p>
+
+      <div class="player">
+        <button id="btn-play" class="btn icon" type="button" aria-label="Přehrát nahrávku">
+          <span id="play-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4l13 8-13 8z"/></svg>
+          </span>
+        </button>
+        <span id="play-time" class="ptime">0:00 / 0:00</span>
+        <button id="btn-loop" class="btn loop" type="button" aria-pressed="false">Smyčka tónu</button>
+        <input id="seek" class="seek" type="range" min="0" max="1000" value="0" step="1"
+               aria-label="Poloha v nahrávce">
+      </div>
+      <p class="hint">Ukazatel v grafu jde s nahrávkou. Klepnutím do grafu přeskočíš
+         na to místo; „Smyčka tónu" přehraje pořád dokola ten tón, na kterém právě
+         stojíš.</p>
+
+      <div class="chart-wrap">
+        <canvas id="c-spr" class="chart" height="230"></canvas>
+        <canvas id="c-spr-head" class="chart-head" height="230" aria-hidden="true"></canvas>
+      </div>
+
+      <h3>Ladění prvního formantu</h3>
+      <p class="hint" id="hint-f1"></p>
+      <canvas id="c-f1" class="chart" height="200"></canvas>
+
+      <h3>Spektrogram</h3>
+      <p class="hint">Světlejší pruh kolem 2,5–3,2 kHz je pásmo zpěváckého
+         formantu (ring). Kde pruh chybí, tam ring na tónu není.</p>
+      <div class="chart-wrap">
+        <canvas id="c-spec" class="chart tall" height="300"></canvas>
+        <canvas id="c-spec-head" class="chart-head tall" height="300" aria-hidden="true"></canvas>
+      </div>
+
+      <details class="tips">
+        <summary>Naměřené hodnoty a čísla (pro podrobné srovnání)</summary>
+        <div class="tbl-wrap">
+          <table id="t-notes">
+            <thead>
+              <tr>
+                <th>#</th><th>tón</th><th>čas</th><th>f0 Hz</th><th>délka</th>
+                <th>SPR dB</th><th>ring</th><th>F1</th><th>F2</th><th>F1:F0 %</th>
+                <th>HNR</th><th>vibr. Hz</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </details>
+
+      <div class="actions">
+        <button id="btn-save" class="btn primary" type="button">Uložit do historie</button>
+        <button id="btn-md" class="btn" type="button">Stáhnout report</button>
+        <button id="btn-json" class="btn" type="button">Stáhnout JSON</button>
+        <button id="btn-new" class="btn ghost" type="button">Nové měření</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────── HISTORIE ─────────── -->
+  <section class="panel">
+    <h2>Trend v čase</h2>
+    <p class="hint">Srovnávej jen měření stejným mikrofonem a způsobem. Rozdíly
+       menší než 2 dB nejsou signál — to je šum.</p>
+    <div id="hist-empty" class="hint">Zatím žádné uložené měření.</div>
+    <canvas id="c-trend" class="chart hidden" height="260"></canvas>
+    <div class="tbl-wrap">
+      <table id="t-hist" class="hidden">
+        <thead>
+          <tr><th>datum</th><th>obor</th><th>ring</th><th>SPR med</th><th>tónů</th>
+              <th>FHE</th><th></th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel refs">
+    <h2>Referenční hodnoty</h2>
+    <dl>
+      <dt>SPR — nezpěváci</dt><dd>−22,7 ± 5,1 dB</dd>
+      <dt>SPR — profesionálové</dt><dd>−13,1 ± 3,8 dB</dd>
+      <dt>FHE — tenor</dt><dd>2705 ± 221 Hz</dd>
+      <dt>FHE — baryton</dt><dd>2454 ± 206 Hz</dd>
+      <dt>FHE — bas</dt><dd>2384 ± 164 Hz</dd>
+      <dt>FHE — soprán</dt><dd>3092 ± 284 Hz</dd>
+    </dl>
+    <p class="hint">
+      SPR (Singing Power Ratio) = vrchol 2–4 kHz minus vrchol 0–2 kHz. Vyšší
+      (méně záporná) hodnota = více ringu.<br>
+      Zdroj SPR: Omori et al. 1996, <em>Journal of Voice</em> 10:228–235.<br>
+      FHE (Frequency of Half Energy) = kde kumulativní energie v pásmu 2–3,6 kHz
+      dosáhne 50 %. Popisuje barvu hlasu nezávisle na výšce tónu.<br>
+      Zdroj FHE: <em>Scientific Reports</em> 2022, databáze 1723 vzorků
+      profesionálních zpěváků.
+    </p>
+    <p class="hint">
+      <strong>Co z mikrofonu měřit nelze:</strong> subglotický tlak, míru dovření
+      hlasivek, polohu hrtanu. Ty jsou dostupné jen nepřímo (SPL, HNR). Žádná
+      metrika nenahradí ucho lektora.
+    </p>
+  </section>
+
+</main>
+
+<footer class="ftr">
+  <p>Vše počítáno lokálně. Žádný server, žádné nahrávání na cizí stroj.</p>
+  <p class="ftr-ver">Verze aplikace: <strong id="app-ver">—</strong></p>
+  <p><button id="btn-clear" class="link" type="button">Smazat všechna uložená data</button></p>
+</footer>
+
+<div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+<script type="module" src="src/app.js?v=12"></script>
+</body>
+</html>
