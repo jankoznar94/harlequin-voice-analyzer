@@ -103,13 +103,42 @@ async function finishRecord() {
 
 /* ═══════════════════════════════════════ dekódování */
 
+/**
+ * Dekóduje zvuk na PŮVODNÍM vzorkovacím kmitočtu souboru.
+ *
+ * PROČ OfflineAudioContext a ne AudioContext (reálná chyba, ověřeno):
+ * AudioContext je vázaný na zvukový HARDWARE. Když telefon zrovna běží na
+ * nízkém kmitočtu (Bluetooth handsfree profil, úsporný režim, jiná aplikace
+ * drží zvuk), dekóduje klidně na 16 nebo 12 kHz. Pásmo 2–4 kHz, ze kterého
+ * se měří ring, je pak useknuté a aplikace to vyhlásila jako vadu NAHRÁVKY
+ * („Ring nelze měřit — silná komprese, nahraj WAV"), i když byla nahrávka
+ * v pořádku. Naměřeno: při 12 kHz vyjde mez pásma ~3747 Hz → hláška
+ * „pásmo useknuto"; při 48 kHz totéž audio dá 4406 Hz → měřitelné.
+ * OfflineAudioContext na hardware vázaný není a dekódoval vždy 48 kHz.
+ */
+async function decodeAudio(blob) {
+  const ab = await blob.arrayBuffer();
+  const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  if (OAC) {
+    try {
+      const off = new OAC(1, 1, 48000);
+      return await off.decodeAudioData(ab.slice(0));
+    } catch (e) {
+      console.warn('[i] OfflineAudioContext nedekódoval, zkouším AudioContext', e);
+    }
+  }
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  try {
+    return await ctx.decodeAudioData(ab.slice(0));
+  } finally {
+    try { await ctx.close(); } catch {}
+  }
+}
+
 async function handleBlob(blob, label) {
   showProgress(0.02, 'Dekóduji zvuk…');
   try {
-    const ab = await blob.arrayBuffer();
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const audio = await ctx.decodeAudioData(ab.slice(0));
-    await ctx.close();
+    const audio = await decodeAudio(blob);
     const mono = toMono(audio);
     runAnalysis(mono, audio.sampleRate, label, blob);
   } catch (e) {
@@ -450,6 +479,20 @@ function unusableText(res) {
       `Špička je ${fmt(peak, 0)} dBFS, takže zvuk tam je — ale analýza v něm nenašla ` +
       'udržené tóny hlasu. Bývá to řeč, šum, doprovod bez zpěvu, nebo nahrávka kratší než ~2 s. ' +
       'Nahraj souvislý zpívaný tón nebo frázi.';
+  }
+  /* Pásmo useknuté SAMOTNÝM vzorkovacím kmitočtem nahrávky — pozná se to tak,
+   * že mez pásma leží hned pod Nyquistovou mezi (sr/2). To není vada záznamu,
+   * jen se z něj výšky nad Nyquist nedozvíme. Rozlišit to musíme, jinak
+   * pošleme člověka hledat kompresi, která tam není. */
+  const sr = res.sample_rate;
+  const lim = res.band && res.band.limit;
+  if (sr && lim === lim && lim > 0.75 * (sr / 2)) {
+    return '<strong>Ring nelze změřit — nahrávka má nízký vzorkovací kmitočet.</strong><br>' +
+      `Zvuk se do analýzy dostal jako ${Math.round(sr / 1000)} kHz, a pásmo 2–4 kHz, ` +
+      `ze kterého se ring měří, tím pádem končí na ~${Math.round(lim)} Hz.<br><br>` +
+      'Tohle není vada zpěvu ani souboru. Bývá to telefon, který zvuk při zpracování ' +
+      'převzorkoval na nižší kmitočet. Zkus to nahrát v aplikaci přímo (mikrofon), ' +
+      'nebo použij soubor, který má 44,1 nebo 48 kHz.';
   }
   return '<strong>Ring nelze změřit.</strong><br>' + escapeHtml(s.reason) + '<br><br>' +
     'Rozsah 2–4 kHz, kde se ring měří, je v této nahrávce potlačený. To dělá ' +
