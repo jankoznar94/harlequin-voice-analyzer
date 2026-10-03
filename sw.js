@@ -9,7 +9,7 @@ const CACHE = 'vocal-lab-v12';
  * Vypisuje se v patičce aplikace, aby uživatel poznal, že aktualizace proběhla —
  * bez toho po kliknutí na tlačítko nemá jak zjistit, jestli se něco stalo.
  */
-const APP_VERSION = '1.0.11';
+const APP_VERSION = '1.0.12';
 const ASSETS = [
   './',
   './index.html',

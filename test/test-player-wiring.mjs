@@ -22,6 +22,7 @@
  */
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { installAppEnv, sleep } from './mock-app-env.mjs';
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const APP = path.join(DIR, '..', 'src', 'app.js');
@@ -31,124 +32,16 @@ const check = (name, ok, detail = '') => {
   if (ok) pass++; else fail++;
   console.log(`  ${ok ? '✓' : '✗'} ${name}${detail ? '  — ' + detail : ''}`);
 };
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/* ── chycené chyby ──────────────────────────────────────────────────────
-   Neodchycená výjimka v setTimeout by jinak shodila celý proces a nebylo by
-   vidět, KDE vznikla. Zachytíme ji a hlásíme jako selhání testu. */
-const errors = [];
-process.on('uncaughtException', (e) => errors.push(e));
-process.on('unhandledRejection', (e) => errors.push(e));
-
-/* ── mock DOM ──────────────────────────────────────────────────────────── */
-
-const ctx2d = () => ({
-  setTransform() {}, fillText() {}, beginPath() {}, moveTo() {}, lineTo() {},
-  stroke() {}, fill() {}, closePath() {}, arc() {}, save() {}, restore() {},
-  translate() {}, rotate() {}, setLineDash() {}, fillRect() {}, clearRect() {},
-  createImageData: (w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }),
-  putImageData() {}, drawImage() {},
-});
-
-function makeEl(id) {
-  return {
-    id, textContent: '', innerHTML: '', value: '', disabled: false,
-    onclick: null, onchange: null, className: '', files: [], style: { setProperty() {} },
-    classList: { add() {}, remove() {}, contains: () => false, toggle() {} },
-    append() {}, appendChild() {}, remove() {},
-    setAttribute() {}, getAttribute: () => null,
-    querySelector: () => makeEl('child'), querySelectorAll: () => [],
-    addEventListener() {}, removeEventListener() {},
-    getContext: () => ctx2d(),
-    clientWidth: 800, clientHeight: 300, width: 800, height: 300,
-    getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 300 }),
-  };
-}
-const els = new Map();
-const el = (id) => { if (!els.has(id)) els.set(id, makeEl(id)); return els.get(id); };
-
-globalThis.document = {
-  readyState: 'complete',
-  getElementById: (id) => el(id),
-  createElement: (tag) => makeEl(tag),
-  addEventListener() {}, querySelectorAll: () => [], body: makeEl('body'),
-};
-globalThis.window = {
-  devicePixelRatio: 2, addEventListener() {}, scrollTo() {},
-  matchMedia: () => ({ matches: false, addEventListener() {} }),
-};
 
 /* ── zvuk: mock Web Audio + <audio> ────────────────────────────────────── */
 
-/** Vyrobí vzorky, ze kterých analýza opravdu najde tóny (ne ticho). */
-function synth(seconds = 3.2, sr = 44100) {
-  const n = Math.round(seconds * sr);
-  const out = new Float32Array(n);
-  const f0s = [196, 247, 294, 392];
-  f0s.forEach((f0, k) => {
-    const a = Math.round((k * 0.8 + 0.05) * sr);
-    const b = Math.min(n, Math.round((k * 0.8 + 0.65) * sr));
-    for (let i = a; i < b; i++) {
-      const t = i / sr;
-      let s = 0;
-      for (let h = 1; h < 40; h++) {
-        const fh = f0 * h;
-        if (fh > sr / 2 - 100) break;
-        const amp = (1 / h) * (Math.exp(-((fh - 2800) ** 2) / (2 * 900 ** 2))
-          + 0.35 * Math.exp(-((fh - 700) ** 2) / (2 * 400 ** 2)));
-        s += amp * Math.sin(2 * Math.PI * fh * t);
-      }
-      const fade = Math.min(1, (i - a) / 500) * Math.min(1, (b - i) / 500);
-      out[i] = 0.3 * s * fade;
-    }
-  });
-  return out;
-}
+/* ── prostředí prohlížeče (sdílený mock) ────────────────────────────────
+   Stejné mocky používá i test-decode.mjs — kdyby si každý test vedl vlastní,
+   jeden z nich tiše zestárne a testy začnou lhát. */
+const env = installAppEnv({ audioSampleRate: 44100, offlineSampleRate: 48000 });
+const { el, els, audioEls, objectUrls, errors } = env;
 
-let decodedWith = null;
-class MockAudioContext {
-  async decodeAudioData(ab) {
-    decodedWith = ab;
-    const data = synth();
-    return {
-      numberOfChannels: 1, length: data.length, sampleRate: 44100,
-      getChannelData: () => data,
-    };
-  }
-  close() { return Promise.resolve(); }
-}
-globalThis.window.AudioContext = MockAudioContext;
-
-/** Mock <audio> — app.js ho vytváří přes `new Audio()`. */
-const audioEls = [];
-class MockAudio {
-  constructor() {
-    this.src = null; this.paused = true; this.currentTime = 0;
-    this.duration = 3.2; this.preload = '';
-    this._l = {};
-    audioEls.push(this);
-  }
-  addEventListener(type, fn) { (this._l[type] ||= []).push(fn); }
-  removeEventListener(type, fn) { this._l[type] = (this._l[type] || []).filter((f) => f !== fn); }
-  emit(type) { (this._l[type] || []).slice().forEach((fn) => fn({ target: this })); }
-  play() { this.paused = false; this.emit('play'); return Promise.resolve(); }
-  pause() { this.paused = true; this.emit('pause'); }
-  removeAttribute(a) { if (a === 'src') this.src = null; }
-}
-globalThis.Audio = MockAudio;
-
-/* ── objektové URL — hlídáme, že vznikne pro původní blob ──────────────── */
-
-const objectUrls = [];
-const origCreate = URL.createObjectURL;
-URL.createObjectURL = (blob) => { const u = 'blob:mock/' + objectUrls.length; objectUrls.push({ url: u, blob }); return u; };
-URL.revokeObjectURL = () => {};
-
-globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} };
-globalThis.requestAnimationFrame = (fn) => setTimeout(fn, 0);
-globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
-globalThis.alert = () => {};
-Object.defineProperty(globalThis, 'navigator', { value: {}, writable: true, configurable: true });
 
 /* ── načtení skutečného app.js ─────────────────────────────────────────── */
 
@@ -247,8 +140,6 @@ check('ukazatel se vykreslil bez chyby', errors.length === 0);
   check('přehrávač se uklidil (audio bez src)', audioEls[0].src === null,
     String(audioEls[0].src));
 }
-
-URL.createObjectURL = origCreate;
 
 console.log(`\n${fail === 0 ? '✓' : '✗'} Cesta soubor → analýza → přehrávač: ${pass} prošlo, ${fail} selhalo\n`);
 process.exit(fail ? 1 : 0);
