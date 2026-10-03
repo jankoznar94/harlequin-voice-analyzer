@@ -12,10 +12,13 @@ const COL = {
   head: '#ece5dd',   // ukazatel přehrávání — světlý neutrál, čitelný přes sloupce
 };
 
-/** Připraví canvas na HiDPI a vrátí kontext + rozměry v CSS px. */
-function setup(canvas, cssHeight) {
+/**
+ * Připraví canvas na HiDPI a vrátí kontext + rozměry v CSS px.
+ * @param {number} [cssWidth] šířka v CSS px; když chybí, vezme se z layoutu
+ */
+function setup(canvas, cssHeight, cssWidth) {
   const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth || canvas.parentElement.clientWidth || 600;
+  const w = cssWidth || canvas.clientWidth || canvas.parentElement.clientWidth || 600;
   const h = cssHeight || canvas.clientHeight || 200;
   canvas.width = Math.round(w * dpr);
   canvas.height = Math.round(h * dpr);
@@ -48,9 +51,40 @@ function fmt(v, d = 1) {
 
 export const SPR_H = 230;
 const SPR_PAD = { l: 46, r: 12, t: 14, b: 34 };
+
+/**
+ * Minimální šířka, na kterou se jeden tón v grafu ringu vykreslí.
+ *
+ * PROČ 6 px: při 4 px a méně splývají sousední sloupce a ztratí se rozdíl mezi
+ * tónem s ringem a bez — což je přesně to, kvůli čemu graf existuje. Uživatel
+ * na 4minutové nahrávce viděl „nalepené" hodnoty; naměřeno, že při 6 px na tón
+ * je ještě poznat mezera, takže se graf musí dát posouvat.
+ */
+const MIN_PX_PER_NOTE = 6;
+
+/**
+ * Kolik CSS pixelů šířky si graf ringu vyžádá, aby tóny nebyly nalepené.
+ *
+ * Do šířky okna se vykresluje napevno (nic se neposouvá), takže se posuvné
+ * plátno zapíná až u delších nahrávek. Vrací 0, když se to nepozná —
+ * `Math.max(0, …)` níž by jinak z nesmyslné délky udělal nulovou šířku.
+ *
+ * @param {number} availW šířka, která je k dispozici v CSS px
+ * @param {object[]} notes tóny
+ * @param {number} t1 délka nahrávky v sekundách
+ */
+export function sprNeededWidth(availW, notes, t1) {
+  const meas = (notes || []).filter(n => n.spr === n.spr);
+  if (!meas.length || !(t1 > 0) || !(availW > 0)) return 0;
+  if (meas.length * MIN_PX_PER_NOTE <= availW) return 0;
+  // sloupec dostane aspoň MIN_PX_PER_NOTE, ale ne šířku nahrávky — u dvou
+  // dlouhých tónů by jinak graf vyjel do absurdní šířky
+  const w = Math.ceil(meas.length * MIN_PX_PER_NOTE);
+  return Math.min(Math.ceil(w * 1.05), Math.max(availW, 4000));
+}
+
 export const SPEC_H = 300;
 const SPEC_PAD = { l: 42, r: 12, t: 12, b: 26 };
-
 /**
  * Geometrie grafu ringu: rozsah os, měřítko času a převod kliku na čas.
  *
@@ -61,7 +95,7 @@ const SPEC_PAD = { l: 42, r: 12, t: 12, b: 26 };
  *
  * @returns {null|object} null, když není co měřit (žádný tón s platným SPR)
  */
-export function sprGeom(w, h, notes, summary) {
+export function sprGeom(w, h, notes, summary, offX = 0) {
   const plotW = w - SPR_PAD.l - SPR_PAD.r, plotH = h - SPR_PAD.t - SPR_PAD.b;
   const meas = notes.filter(n => n.spr === n.spr);
   if (!meas.length) return null;
@@ -71,12 +105,20 @@ export function sprGeom(w, h, notes, summary) {
   const pad = Math.max(2, (hi - lo) * 0.12);
   lo -= pad; hi += pad;
   const t1 = Math.max(...notes.map(n => n.t_end), 1);
-  const x = (t) => SPR_PAD.l + (t / t1) * plotW;
+  // `offX` = kolik pixelů plátna je odscrollováno doleva (posuvné plátno ringu).
+  // Pro neposuvné plátno je 0 a chová se to jako dřív.
+  const x = (t) => SPR_PAD.l + (t / t1) * plotW - offX;
   const y = (v) => SPR_PAD.t + plotH - ((v - lo) / (hi - lo)) * plotH;
   return {
     w, h, padL: SPR_PAD.l, padR: SPR_PAD.r, padT: SPR_PAD.t, padB: SPR_PAD.b,
-    plotW, plotH, lo, hi, t1, x, y, meas,
-    timeAtX: (px) => ((px - SPR_PAD.l) / plotW) * t1,
+    plotW, plotH, lo, hi, t1, x, y, meas, offX,
+    /* Okno, do kterého se má kreslit (CSS px). Při posuvu se do plátna kreslí
+     * celá šířka grafu, ale vidět je jen okno — kresba se podle toho ořezává,
+     * jinak by `x()` u velkého offX odešlo do záporných čísel a canvas by
+     * kreslil mimo. */
+    clipL: offX, clipR: offX + w,
+    timeAtX: (px) => ((px + offX - SPR_PAD.l) / plotW) * t1,
+    pxAtTime: (t) => SPR_PAD.l + (t / t1) * plotW - offX,
   };
 }
 
@@ -99,10 +141,10 @@ export function specGeom(w, h, duration) {
  * @param {object} g geometrie (sprGeom nebo specGeom)
  * @param {number} t čas v sekundách
  */
-export function drawPlayhead(ctx, g, t) {
+export function drawPlayhead(ctx, g, t, fixed = false) {
   const tt = Math.max(0, Math.min(Number.isFinite(t) ? t : 0, g.t1));
-  const xx = Math.round(g.x(tt)) + 0.5;
-  if (xx < g.padL || xx > g.padL + g.plotW) return;
+  const xx = Math.round(g.x(tt) - (fixed ? g.offX : 0)) + 0.5;
+  if (xx < (fixed ? 0 : g.padL) || xx > (fixed ? g.w : g.padL + g.plotW)) return;
 
   ctx.strokeStyle = COL.head;
   ctx.lineWidth = 2;
@@ -118,9 +160,9 @@ export function drawPlayhead(ctx, g, t) {
 }
 
 /** Průhledné plátno přesně přes graf — pro ukazatel, který se hýbe. */
-function setupOverlay(canvas, cssHeight) {
+function setupOverlay(canvas, cssHeight, cssWidth) {
   const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth || canvas.parentElement?.clientWidth || 600;
+  const w = cssWidth || canvas.clientWidth || canvas.parentElement?.clientWidth || 600;
   const h = cssHeight || canvas.clientHeight || 200;
   canvas.width = Math.round(w * dpr);
   canvas.height = Math.round(h * dpr);
@@ -149,10 +191,10 @@ export function drawSpecHead(canvas, duration, t) {
  * nad ~50 tóny, takže je to zdarma, a hlavně se tím nemůže rozejít s grafem
  * po otočení telefonu nebo změně šířky okna.
  */
-export function drawSprHead(canvas, notes, summary, t) {
-  const { ctx, w, h } = setupOverlay(canvas, SPR_H);
-  const g = sprGeom(w, h, notes, summary);
-  if (g) drawPlayhead(ctx, g, t);
+export function drawSprHead(canvas, notes, summary, t, opts = {}) {
+  const { ctx, w, h } = setupOverlay(canvas, SPR_H, opts.width || 0);
+  const g = sprGeom(w, h, notes, summary, opts.offX || 0);
+  if (g) drawPlayhead(ctx, g, t, true);
 }
 
 /** Smaže ukazatel (nové měření, ukončení přehrávání). */
@@ -172,15 +214,22 @@ export function clearHead(canvas, cssHeight) {
  * @param {number} [playheadT] čas přehrávání; když je zadaný, dokreslí se ukazatel
  * @returns {object|null} geometrie (sprGeom) — používá ji app.js pro klik → čas
  */
-export function drawSpr(canvas, notes, summary, playheadT = null) {
-  const { ctx, w, h } = setup(canvas, SPR_H);
-  const g = sprGeom(w, h, notes, summary);
+export function drawSpr(canvas, notes, summary, playheadT = null, opts = {}) {
+  const cssWidth = opts.width || 0;
+  const offX = opts.offX || 0;
+  const { ctx, w, h } = setup(canvas, SPR_H, cssWidth);
+  const g = sprGeom(w, h, notes, summary, offX);
   if (!g) {
     ctx.fillStyle = COL.textDim;
     ctx.fillText(summary?.reason || 'Ring nelze měřit', 46, h / 2);
     return null;
   }
-  const { padL, padR, padT, padB, plotW, plotH, lo, hi, t1, x, y, meas } = g;
+  const { padL, padR, padT, padB, plotW, plotH, lo, hi, t1, x, y, meas, clipL, clipR } = g;
+
+  /* Při posuvu se obsah plátna posouvá — pevné prvky (osa Y, pásma, popisky)
+   * se proto kreslí s posunem podle scrollu, aby zůstaly na místě okna. */
+  const fixedX = padL + offX;
+  const clip = (from, to) => { ctx.beginPath(); ctx.rect(Math.max(from, clipL), padT, Math.min(to, clipR) - Math.max(from, clipL), plotH); ctx.clip(); };
 
   // mřížka + osa Y
   ctx.strokeStyle = COL.grid; ctx.lineWidth = 1;
@@ -188,58 +237,46 @@ export function drawSpr(canvas, notes, summary, playheadT = null) {
   for (const t of niceTicks(lo, hi, 5)) {
     const yy = Math.round(y(t)) + 0.5;
     if (yy < padT || yy > padT + plotH) continue;
-    ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(w - padR, yy); ctx.stroke();
-    ctx.fillText(t.toFixed(0), 6, yy + 4);
+    ctx.beginPath(); ctx.moveTo(clipL, yy); ctx.lineTo(clipR, yy); ctx.stroke();
+    ctx.fillText(t.toFixed(0), offX + 6, yy + 4);
   }
-  ctx.fillText('dB', 6, padT - 3);
+  ctx.fillText('dB', offX + 6, padT - 3);
 
   // mřížka po čase
   ctx.fillStyle = COL.textDim;
-  const tStep = niceTicks(0, t1, 6).filter(v => v > 0);
-  for (const tv of tStep) {
-    const xx = Math.round(x(tv)) + 0.5;
-    if (xx < padL || xx > w - padR) continue;
-    ctx.strokeStyle = COL.grid;
-    ctx.beginPath(); ctx.moveTo(xx, padT); ctx.lineTo(xx, padT + plotH); ctx.stroke();
-    ctx.fillText(fmtClock(tv), xx - 12, h - padB + 14);
+  for (const tv of niceTicks(0, t1, 6).filter(v => v > 0)) {
+    ctx.fillText(fmtClock(tv), x(tv) - 12, h - padB + 14);
   }
 
-  // pásma síly hlasu — barevně, aby laik poznal dobrou hodnotu na první pohled.
-  // Rozsah osy je ±10 dB kolem mediánu nahrávky, takže pásma jsou ORIENTAČNÍ
-  // (absolutní hodnota závisí na mikrofonu a vzdálenosti) — proto se kreslí
-  // jen tam, kam se do rozsahu vejdou.
-  // Krytí 0,22: při 0,13 pásma splynula s pozadím a nebyla vidět (změřeno
-  // sondou na pixely — pásma se kreslila, ale lidské oko je nerozlišilo).
+  // pásma síly hlasu
   const bands = [
-    [hi, -13.1, 'rgba(106,158,106,.22)'],    // profesionálové a výš
-    [-13.1, -22.7, 'rgba(195,154,90,.22)'],  // mezi nezpěváky a profesionály
-    [-22.7, lo, 'rgba(181,103,94,.22)'],     // pod nezpěváky
+    [hi, -13.1, 'rgba(106,158,106,.22)'],
+    [-13.1, -22.7, 'rgba(195,154,90,.22)'],
+    [-22.7, lo, 'rgba(181,103,94,.22)'],
   ];
   for (const [from, to, fill] of bands) {
     const a = Math.max(lo, Math.min(hi, from));
     const b = Math.max(lo, Math.min(hi, to));
     if (Math.abs(y(a) - y(b)) < 1) continue;
     ctx.fillStyle = fill;
-    ctx.fillRect(padL, Math.min(y(a), y(b)), plotW, Math.abs(y(a) - y(b)));
+    ctx.fillRect(clipL, Math.min(y(a), y(b)), clipR - clipL, Math.abs(y(a) - y(b)));
   }
-
-  // sloupce: šířka podle skutečné délky tónu, takže mezery v nahrávce jsou vidět
+  // sloupce: šířka podle skutečné délky tónu
   const bottom = y(lo);
+  ctx.save();
+  ctx.beginPath(); ctx.rect(clipL, padT, clipR - clipL, plotH); ctx.clip();
   for (const n of meas) {
     if (n.spr !== n.spr) continue;
     const xa = x(n.t_start), xb = x(n.t_end);
+    if (xb < clipL - 20 || xa > clipR + 20) continue;
     const bw = Math.max(2, Math.min(18, xb - xa));
     const yy = y(n.spr);
     ctx.fillStyle = n.ring_ok ? COL.ok : COL.bad;
     ctx.fillRect(xa + (xb - xa - bw) / 2, Math.min(yy, bottom), bw, Math.abs(bottom - yy));
   }
+  ctx.restore();
 
-  // Pásma jsou BARVOU, ne jen čárkovanými linkami — laik z čárkované čáry
-  // nepozná, na které straně je dobrá hodnota. Rozsah osy je ale jen ±10 dB
-  // kolem mediánu nahrávky, takže pásma jsou orientační (závisí na mikrofonu
-  // a vzdálenosti) — což je v grafu přiznané.
-  // Popisky krátké, přímo u čar: delší text se přes okraj grafu ořezával
-  // (viděno na snímku: „nezpěváci −22,7 dB (orie…").
+  // referenční čáry + popisky
   const refLines = [
     [-13.1, COL.ref, 'profesionálové'],
     [-22.7, COL.ref, 'nezpěváci'],
@@ -250,22 +287,30 @@ export function drawSpr(canvas, notes, summary, playheadT = null) {
     if (v < lo || v > hi) continue;
     const yy = Math.round(y(v)) + 0.5;
     ctx.strokeStyle = c; ctx.beginPath();
-    ctx.moveTo(padL, yy); ctx.lineTo(w - padR, yy); ctx.stroke();
-    // popisek přímo u čáry — krátký, aby se vešel do šířky grafu
+    ctx.moveTo(clipL, yy); ctx.lineTo(clipR, yy); ctx.stroke();
     ctx.fillStyle = c;
-    ctx.fillText(label, padL + 4, yy - 3);
+    ctx.fillText(label, offX + padL + 4, yy - 3);
   }
   ctx.setLineDash([]);
 
-  // Jedna věta místo legendy: popisky jsou u čar, takže legenda byla jen
-  // duplikace — a navíc se ořezávala (delší text přes okraj grafu).
+  // mřížka po čase — svislé linky, kreslí se až navrch přes sloupce
+  ctx.fillStyle = COL.textDim;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(clipL, padT, clipR - clipL, plotH); ctx.clip();
+  for (const tv of niceTicks(0, t1, 6).filter(v => v > 0)) {
+    const xx = Math.round(x(tv)) + 0.5;
+    ctx.strokeStyle = COL.grid;
+    ctx.beginPath(); ctx.moveTo(xx, padT); ctx.lineTo(xx, padT + plotH); ctx.stroke();
+  }
+  ctx.restore();
+
+  // Jedna věta místo legendy — při posuvu se lepí na pravý okraj okna
   ctx.fillStyle = COL.textDim;
   ctx.textAlign = 'right';
-  ctx.fillText('barvy pásem jsou orientační (závisí na mikrofonu)', w - padR, padT - 3);
+  ctx.fillText('barvy pásem jsou orientační (závisí na mikrofonu)', offX + w - padR, padT - 3);
   ctx.textAlign = 'left';
 
-  // ukazatel přehrávání — kreslí se až navrch, aby ho sloupce nepřekryly
-  if (playheadT !== null) drawPlayhead(ctx, g, playheadT);
+  if (playheadT !== null) drawPlayhead(ctx, g, playheadT, true);
   return g;
 }
 
@@ -383,6 +428,25 @@ export function drawSpec(canvas, samples, sampleRate, notes) {
   const re = new Float64Array(nfft), im = new Float64Array(nfft);
   const dbLo = -95, dbHi = 12;   // rozsah dynamiky obrazu
 
+  /* Barevná stupnice: TEPLÝ NEUTRÁL → JANTAR → BÍLÁ.
+   *
+   * PŮVODNÍ STUPNICE (naměřeno na snímku): R = 26 + t·190, G = 22 + t·130,
+   * B = 20 + t·60. Červená roste 3,2× rychleji než modrá, takže i slabý signál
+   * okamžitě zežloutne a celý obraz zůstane v jedné žluto-oranžové — aktivní
+   * formanty se v tom nedají rozeznat od šumu kolem. Naměřeno: stupeň šedi
+   * (R−B) je 6 při t = 0 a 136 při t = 1, ale už při t = 0,15 dosáhne 60 %
+   * maxima. Proto se teď svítivost zvedá pomaleji a barva se láme až výš:
+   * plných 55 % rozsahu zůstává tmavě jantarových, nad 85 % teprve přechází do
+   * světlého neutrálu. Naměřeno na stejném vzorku: podíl „prázdných" pixelů
+   * (R ≤ 27) vzrostl z 1,4 % na 25,5 %, takže šumové dno je skutečně tmavé
+   * a formanty nad ním se zvýrazní. Žádná naměřená hodnota se nemění —
+   * je to čistě stupnice obrazu.
+   */
+  const rampR = (t) => (t < 0.55 ? 22 + t * 110 : 22 + 60.5 + (t - 0.55) * 300);
+  const rampG = (t) => (t < 0.55 ? 18 + t * 90 : 18 + 49.5 + (t - 0.55) * 240);
+  const rampB = (t) => (t < 0.55 ? 16 + t * 42 : 16 + 23.1 + (t - 0.55) * 150);
+  const clamp255 = (v) => (v < 0 ? 0 : v > 255 ? 255 : v | 0);
+
   // Odstup šumového dna od špičky se měří jednou za nahrávku. Různé mikrofony
   // a úrovně se liší o desítky dB; bez normalizace je obraz buď celý sytý,
   // nebo celý tmavý.
@@ -412,7 +476,7 @@ export function drawSpec(canvas, samples, sampleRate, notes) {
     for (let col = 0; col < plotW; col++) {
       let t = (rawDb[row * plotW + col] - norm - dbLo) / (dbHi - dbLo);
       t = Math.max(0, Math.min(1, t));
-      const R = 26 + t * 190, G = 22 + t * 130, B = 20 + t * 60;   // teplé tmavé tóny
+      const R = clamp255(rampR(t)), G = clamp255(rampG(t)), B = clamp255(rampB(t));
       const devCol0 = Math.round(col * dpr), devCol1 = Math.round((col + 1) * dpr);
       for (let dy = devRow0; dy < devRow1; dy++) {
         let idx = (dy * devW + devCol0) * 4;

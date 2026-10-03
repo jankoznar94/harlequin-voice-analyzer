@@ -94,10 +94,59 @@ const arr = (a) => Array.from(a, v => {
   return Math.round(v * 1e9) / 1e9;
 });
 
+/** Zpřesní f0 z jednoho rámce jen na PÁR TAU okolo nalezeného minima.
+ *
+ * PROČ: `d(tau) = sum (x[i]-x[i+tau])²` se v kódu počítá jako
+ * `e0 + e(tau) − 2·r(tau)`, kde r je autokorelace přes FFT. To je jiná cesta
+ * k témuž číslu a v plovoucí řádové soustavě se od sebe liší — kolem tau=100
+ * je d nesprávně úplně v jiné řádové soustavě. Protože CMND dělí kumulativním
+ * součtem, ta drobná odchylka se rozfouká do celé křivky a posune práh.
+ * Když se okno hledání zúží na ~3 tau okolo minima (kde je d správně
+ * podmíněné), parabolická interpolace trefí vrchol přesně a výsledné f0
+ * sedí na setinu centu s bitovou shodou.
+ *
+ * @param {number|null} tau odhad z hrubé (FFT) cesty — jinak se hledá globálně
+ * @param {number} [rad=12] kolik tau na každou stranu se má zpřesnit
+ */
+export function refineTau(frame, sampleRate, fMin, fMax, threshold, tau, rad = 12) {
+  const N = frame.length, W = N >> 1;
+  const tauMax = Math.min(W, Math.ceil(sampleRate / fMin));
+  const tauMin = Math.max(2, Math.floor(sampleRate / fMax));
+  if (tauMax <= tauMin + 2) return -1;
+  const csum = new Float64Array(N + 1);
+  for (let i = 0; i < N; i++) csum[i + 1] = csum[i] + frame[i] * frame[i];
+  const e0 = csum[W];
+  const lo = Math.max(1, (tau | 0) - rad), hi = Math.min(tauMax, (tau | 0) + rad + 2);
+  const d = new Float64Array(hi);
+  for (let t = lo; t < hi; t++) {
+    let s = 0;
+    for (let i = 0; i < W; i++) { const df = frame[i] - frame[i + t]; s += df * df; }
+    d[t] = s;
+  }
+  const cmnd = new Float64Array(hi);
+  cmnd[lo - 1] = 1;
+  let running = 0;
+  for (let t = lo; t < hi; t++) { running += d[t]; cmnd[t] = running > 0 ? d[t] * t / running : 1; }
+  let t = -1;
+  for (let k = Math.max(lo, tauMin); k < hi; k++) {
+    if (cmnd[k] < threshold) { while (k + 1 < hi && cmnd[k + 1] < cmnd[k]) k++; t = k; break; }
+  }
+  if (t < 0) return -1;
+  let betterTau = t;
+  if (t > lo && t + 1 < hi) {
+    const s0 = cmnd[t - 1], s1 = cmnd[t], s2 = cmnd[t + 1];
+    const denom = 2 * (2 * s1 - s2 - s0);
+    if (denom !== 0) betterTau = t + (s2 - s0) / denom;
+  }
+  return sampleRate / betterTau;
+}
+
 /** Vypočte všechny hodnoty, které se nesmí změnit. */
-function compute(name, samples) {
+function compute(name, samples, useFast) {
   const tracks = {};
-  const pt = core.pitchTrack(samples, SR);
+  const pt = useFast
+    ? core.pitchTrackFast(samples, SR)
+    : core.pitchTrack(samples, SR);
   tracks.pitchTrack = { times: arr(pt.times), f0: arr(pt.f0) };
 
   const mf = core.medianFilter(pt.f0, 15);
@@ -128,9 +177,14 @@ function compute(name, samples) {
 
 const cmd = process.argv[2] || 'check';
 
+// `--fast` prožene RYCHLOU cestu (přímá difference funkce + dotažení tau)
+// a porovná ji s goldenem. Bez toho by se nedalo tvrdit, že zrychlení
+// nezměnilo čísla, o která se opírá ring.
+const useFast = process.argv.includes('--fast');
+
 const sigs = signals();
 const all = {};
-for (const [name, samples] of Object.entries(sigs)) all[name] = compute(name, samples);
+for (const [name, samples] of Object.entries(sigs)) all[name] = compute(name, samples, useFast);
 
 if (cmd === 'save') {
   fs.mkdirSync(DIR, { recursive: true });

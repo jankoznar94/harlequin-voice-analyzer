@@ -19,6 +19,8 @@ export const ctx2d = () => ({
   setTransform() {}, fillText() {}, beginPath() {}, moveTo() {}, lineTo() {},
   stroke() {}, fill() {}, closePath() {}, arc() {}, save() {}, restore() {},
   translate() {}, rotate() {}, setLineDash() {}, fillRect() {}, clearRect() {},
+  // `rect` + `clip` používá graf ringu při posuvu (ořez na viditelné okno)
+  rect() {}, clip() {},
   createImageData: (w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }),
   putImageData() {}, drawImage() {},
 });

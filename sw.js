@@ -2,14 +2,14 @@
  * Service worker — offline provoz.
  * Verze cache zvyš při změně souborů, jinak se drží stará.
  */
-const CACHE = 'vocal-lab-v15';
+const CACHE = 'vocal-lab-v16';
 
 /**
  * Verze nasazeného buildu. Zvyšovat spolu s CACHE výše a s ?v= v index.html.
  * Vypisuje se v patičce aplikace, aby uživatel poznal, že aktualizace proběhla —
  * bez toho po kliknutí na tlačítko nemá jak zjistit, jestli se něco stalo.
  */
-const APP_VERSION = '1.0.15';
+const APP_VERSION = '1.0.16';
 const ASSETS = [
   './',
   './index.html',
@@ -20,6 +20,9 @@ const ASSETS = [
   './src/analysis.js',
   './src/sample-rate.js',
   './src/charts.js',
+  // analýza běží ve workeru — bez tohoto souboru by se analýza sice spustila
+  // v hlavním vlákně, ale progress bar by zase zamrzl (viz analyze-worker.js)
+  './src/analyze-worker.js',
   // živý režim — bez těchto souborů by offline režim otevřel stránku,
   // ale tlačítko Živě by spadlo na chybějícím modulu
   './src/live.js',

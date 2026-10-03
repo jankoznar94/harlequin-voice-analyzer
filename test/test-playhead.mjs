@@ -43,6 +43,7 @@ function mockCanvas(cssW, cssH) {
     translate() {}, rotate() {}, setLineDash() {}, arc() {},
     beginPath() { cur = null; },
     closePath() {},
+    rect() {}, clip() {},
     moveTo(x, y) { cur = { x, y }; ops.moves.push({ x, y }); },
     lineTo(x, y) { if (cur) ops.lines.push({ from: cur, to: { x, y } }); },
     stroke() { ops.strokes++; },
