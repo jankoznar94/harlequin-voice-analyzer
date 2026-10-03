@@ -187,6 +187,56 @@ export const SPR_MIN = -40;
 export const SPR_MAX = 0;
 
 /**
+ * Pásmo, ve kterém se pohybuje většina zpěvů, a jeho podíl na výšce grafu.
+ *
+ * Lineární rozsah −40…0 dB dělá z pásma −20…−10 dB čtvrtinu výšky (10 dB ze 40)
+ * a po odečtení okrajů z toho byla tenká čára — nebylo poznat, kde přesně se
+ * zpěvák nachází, což je přesně to, co má živý indikátor ukázat. Proto je
+ * měřítko osy NELINEÁRNÍ: v pásmu zabírá 1 dB ~4,4× víc místa než mimo něj.
+ *
+ * Podíly jsou tři, ne dva: kdyby horní dekáda (−10…0) dostala jen zbytek po
+ * pásmu, zbylo by na ni ~10 px a popisky „−10“ a „0“ by se překryly. Proto má
+ * každá část svůj pevný podíl a pásmo zůstává největší.
+ */
+export const SPR_BAND = [-20, -10];
+export const SPR_SHARE_ABOVE = 0.20;   // −10…0 dB
+export const SPR_SHARE_BAND = 0.55;   // −20…−10 dB
+export const SPR_SHARE_BELOW = 0.25;  // −40…−20 dB
+
+/**
+ * Převod SPR (dB) na svislou polohu v grafu: 0 = horní okraj, 1 = dolní okraj.
+ *
+ * Zlom měřítka je jen na hranicích pásma (v −20 a −10 dB), mezi nimi je osa
+ * zase rovná — žádné plynulé „rybí oko“, to by se v číslech hůř hledalo.
+ * Hodnoty mimo rozsah se přiříznou na okraj, nevynechají.
+ */
+export function sprOffset(db) {
+  const v = Math.max(SPR_MIN, Math.min(SPR_MAX, Number.isFinite(db) ? db : SPR_MIN));
+  const [lo, hi] = SPR_BAND;
+  const aboveSpan = SPR_MAX - hi;      // −10…0
+  const bandSpan = hi - lo;            // −20…−10
+  const belowSpan = lo - SPR_MIN;      // −40…−20
+  if (v >= hi) return SPR_SHARE_ABOVE * (SPR_MAX - v) / (aboveSpan || 1);
+  if (v <= lo) return SPR_SHARE_ABOVE + SPR_SHARE_BAND + SPR_SHARE_BELOW * (lo - v) / (belowSpan || 1);
+  return SPR_SHARE_ABOVE + SPR_SHARE_BAND * (hi - v) / (bandSpan || 1);
+}
+
+/**
+ * Vodorovné linky osy i s popisky.
+ *
+ * Uvnitř roztaženého pásma je navíc linka na −15 dB — pásmo je vysoké, takže
+ * čtení hodnoty usnadní. Linka na −5 dB by naopak splynula s „−10“ i „0“,
+ * proto se vynechává: roztažení pásma nutně zhušťuje zbytek osy.
+ */
+export function sprTicks() {
+  const t = [];
+  for (let db = SPR_MIN; db <= SPR_MAX; db += 10) t.push({ db, strong: true });
+  const mid = (SPR_BAND[0] + SPR_BAND[1]) / 2;
+  if (SPR_SHARE_BAND > 0 && mid > SPR_MIN && mid < SPR_MAX) t.push({ db: mid, strong: false });
+  return t;
+}
+
+/**
  * Vykreslí historii SPR jako spojitou čáru.
  *
  * Referenční meze (nezpěvák −22,7 dB, profesionál −13,1 dB) se kreslí jako
@@ -201,18 +251,31 @@ export function drawSprHistory(cv, { history = [], refs = null }) {
   const padL = 34, padR = 8, padT = 10, padB = 14;
   const plotW = w - padL - padR;
   const plotH = h - padT - padB;
-  const yOf = (db) => padT + (1 - (db - SPR_MIN) / (SPR_MAX - SPR_MIN)) * plotH;
+  const yOf = (db) => padT + sprOffset(db) * plotH;
 
-  // vodorovné linky po 10 dB
+  // Roztažené pásmo se mírně podbarví — bez toho není na první pohled vidět,
+  // že se měřítko v prostředku mění a že stejná vzdálenost na ose tam znamená
+  // jiný počet dB.
+  if (SPR_SHARE_BAND > 0) {
+    const yB = yOf(SPR_BAND[0]), yT = yOf(SPR_BAND[1]);
+    ctx.fillStyle = COLORS.bg;
+    ctx.globalAlpha = 0.3;
+    ctx.fillRect(padL, Math.min(yB, yT), plotW, Math.abs(yB - yT));
+    ctx.globalAlpha = 1;
+  }
+
+  // vodorovné linky po 10 dB (+ po 5 dB uvnitř roztaženého pásma)
   ctx.font = '500 10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'right';
-  for (let db = SPR_MIN; db <= SPR_MAX; db += 10) {
+  for (const { db, strong } of sprTicks()) {
     const y = Math.round(yOf(db));
     ctx.fillStyle = COLORS.line;
     ctx.fillRect(padL, y, plotW, 1);
     ctx.fillStyle = COLORS.mute;
+    ctx.globalAlpha = strong ? 1 : 0.75;
     ctx.fillText(String(db), padL - 4, y);
+    ctx.globalAlpha = 1;
   }
 
   // referenční meze
@@ -259,6 +322,15 @@ export function drawSprHistory(cv, { history = [], refs = null }) {
   ctx.textBaseline = 'bottom';
   ctx.font = '500 10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
   ctx.fillText('SPR (dB) · posledních ~20 s', padL, padT + plotH + 12);
+
+  // popisek roztaženého pásma — jinak by nebylo poznat, že se měřítko mění
+  if (SPR_SHARE_BAND > 0) {
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.globalAlpha = 0.75;
+    ctx.fillText('pásmo zpěvu', padL + plotW - 2, (yOf(SPR_BAND[0]) + yOf(SPR_BAND[1])) / 2);
+    ctx.globalAlpha = 1;
+  }
 }
 
 /* ── sloupcový ukazatel formantového prostoru (orientační) ────────────────── */
