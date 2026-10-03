@@ -9,6 +9,11 @@ const COL = {
   // Referenční linky: teplý neutrál. Dřív studená modrá (#6d7f9c) — do teplé
   // palety nepatřila a popisky byly navíc málo kontrastní.
   ref: '#8c8078',
+  // Vyřazený tón (moc krátký / moc tichý) — neutrální šeď, NE červená.
+  // Červená znamená výpadek ringu; tohle žádný výpadek není, jen se o tónu
+  // nic netvrdí. Když se obojí kreslilo stejně, uživatel viděl „červený" tón
+  // s SPR −9,7 dB, tedy na úrovni profesionála.
+  excl: '#6f6862',
   head: '#ece5dd',   // ukazatel přehrávání — světlý neutrál, čitelný přes sloupce
 };
 
@@ -275,7 +280,16 @@ export function drawSpr(canvas, notes, summary, playheadT = null, opts = {}) {
     ctx.fillStyle = fill;
     ctx.fillRect(clipL, Math.min(y(a), y(b)), clipR - clipL, Math.abs(y(a) - y(b)));
   }
-  // sloupce: šířka podle skutečné délky tónu
+  /* Sloupce: šířka podle skutečné délky tónu.
+   *
+   * ⚠️ TŘI BARVY, NE DVĚ. Tón, který má platné SPR, ale analýza ho z hodnocení
+   * ringu VYŘADILA (kratší než ~0,30 s nebo příliš tichý), se NESMÍ kreslit
+   * červeně. V datech má `ring_ok === false`, takže dřív červeně vyšel — a
+   * vypadal jako výpadek ringu, kterým ale není. Uživatel pak viděl tón s SPR
+   * −9,7 dB (tedy na úrovni profesionála) obarvený jako vada. Naměřeno na
+   * nahrávce: 1 skutečný výpadek, ale 10 červených sloupců, z toho 3 s SPR
+   * jako profesionál. Vyřazené tóny proto dostávají neutrální šeď.
+   * Rozhoduje `ring_dropout` (skutečný výpadek), ne jen `!ring_ok`. */
   const bottom = y(lo);
   ctx.save();
   ctx.beginPath(); ctx.rect(clipL, padT, clipR - clipL, plotH); ctx.clip();
@@ -285,7 +299,7 @@ export function drawSpr(canvas, notes, summary, playheadT = null, opts = {}) {
     if (xb < clipL - 20 || xa > clipR + 20) continue;
     const bw = Math.max(2, Math.min(18, xb - xa));
     const yy = y(n.spr);
-    ctx.fillStyle = n.ring_ok ? COL.ok : COL.bad;
+    ctx.fillStyle = n.ring_dropout ? COL.bad : n.ring_ok ? COL.ok : COL.excl;
     ctx.fillRect(xa + (xb - xa - bw) / 2, Math.min(yy, bottom), bw, Math.abs(bottom - yy));
   }
   ctx.restore();

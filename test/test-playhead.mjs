@@ -48,7 +48,7 @@ function mockCanvas(cssW, cssH) {
     lineTo(x, y) { if (cur) ops.lines.push({ from: cur, to: { x, y } }); },
     stroke() { ops.strokes++; },
     fill() { ops.filledPaths = (ops.filledPaths || 0) + 1; },
-    fillRect(x, y, w, h) { ops.fills.push([x, y, w, h]); },
+    fillRect(x, y, w, h) { ops.fills.push([x, y, w, h]); ops.fillsStyle = ops.fillsStyle || []; ops.fillsStyle.push({ x, y, w, h, style: this.fillStyle }); },
     clearRect() { ops.clears++; },
     createImageData(w, h) { return { width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }; },
     putImageData(img) { globalThis.__off = img; },
@@ -208,6 +208,43 @@ console.log('\n═══ Překryvná plátna ═══\n');
   const { canvas, ops } = mockCanvas(W, H);
   drawSprHead(canvas, [{ t_start: 0, t_end: 1, spr: NaN }], SUMMARY, 1);
   check('drawSprHead bez měřitelných tónů nic nekreslí a nespadne', ops.strokes === 0);
+}
+
+console.log('\n═══ Barvy sloupců: výpadek ≠ vyřazený tón ═══\n');
+
+/* ⚠️ REGRESE, KTEROU UŽIVATEL VIDĚL: tón s platným SPR, který analýza VYŘADILA
+ * (moc krátký / moc tichý), má v datech `ring_ok === false` — a kreslil se proto
+ * stejně červeně jako skutečný výpadek ringu. Uživatel pak viděl „červený" tón
+ * s SPR −9,7 dB, tedy na úrovni profesionála, a nechápal, proč je červený.
+ * Naměřeno na nahrávce: 1 skutečný výpadek, ale 10 červených sloupců.
+ * Rozhodovat musí `ring_dropout`, ne `!ring_ok`. */
+{
+  const mix = [
+    { t_start: 0.0, t_end: 1.0, spr: -12.0, ring_ok: true,  ring_dropout: false },
+    { t_start: 1.2, t_end: 2.4, spr: -9.7,  ring_ok: false, ring_dropout: false },  // vyřazený, SPR jako profesionál
+    { t_start: 2.6, t_end: 4.0, spr: -24.0, ring_ok: false, ring_dropout: true  },  // skutečný výpadek
+  ];
+  const { canvas, ops } = mockCanvas(W, H);
+  const gr = drawSpr(canvas, mix, SUMMARY);
+  check('drawSpr s mixem tónů vrátí geometrii', !!gr);
+
+  // Sloupce se poznají podle šířky ≤ 18 px; hledáme barvu na nich.
+  const bars = (ops.fillsStyle || []).filter(f => f.w <= 18 && f.h > 0);
+  const reds = bars.filter(f => f.style === '#b5675e');
+  const greys = bars.filter(f => f.style === '#6f6862');
+  check('červeně je jen SKUTEČNÝ výpadek (1 ze 3 tónů)', reds.length === 1,
+    `${reds.length} červených z ${bars.length} sloupců`);
+  check('vyřazený tón (SPR −9,7 dB) je neutrální šedý, ne červený', greys.length === 1,
+    `šedých: ${greys.length} — barvy: ${bars.map(f => f.style).join(' ')}`);
+}
+{
+  // Skutečný výpadek červený zůstat MUSÍ — jinak by oprava jen schovala vadu.
+  const jenVypadek = [{ t_start: 0, t_end: 1, spr: -24.0, ring_ok: false, ring_dropout: true }];
+  const { canvas, ops } = mockCanvas(W, H);
+  drawSpr(canvas, jenVypadek, SUMMARY);
+  const bars = (ops.fillsStyle || []).filter(f => f.w <= 18 && f.h > 0);
+  check('skutečný výpadek ringu se pořád kreslí červeně',
+    bars.some(f => f.style === '#b5675e'), bars.map(f => f.style).join(' '));
 }
 
 console.log(`\n${fail === 0 ? '✓' : '✗'} Ukazatel přehrávání: ${pass} prošlo, ${fail} selhalo\n`);
