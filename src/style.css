@@ -140,6 +140,13 @@ select:focus-visible, .btn:focus-visible, .link:focus-visible {
 /* ── průběh ── */
 .bar { height: 6px; background: var(--bg-input); border-radius: 3px; overflow: hidden; margin: 14px 0; }
 .bar-fill { height: 100%; width: 0; background: var(--accent); transition: width .18s ease; }
+/* Uplynulý čas a odhad — aby šlo poznat „počítá" od „zatuhlo".
+   Neutrální teplý text, žádný glow; čísla tabulkově, aby neposkakovala šířka. */
+.prog-time {
+  display: flex; gap: 6px; flex-wrap: wrap;
+  font-size: 13px; color: var(--fg-dim); font-variant-numeric: tabular-nums;
+  margin: -6px 0 12px;
+}
 
 /* ── KPI ── */
 .kpis {
@@ -210,6 +217,19 @@ select:focus-visible, .btn:focus-visible, .link:focus-visible {
   pointer-events: none;   /* kliky jdou na graf pod ukazatelem */
 }
 .chart-wrap .chart-head.tall { height: 300px; }
+
+/* Posuvné plátno grafu ringu (delší nahrávky — tóny by byly nalepené).
+   Posouvá se JEN graf ringu; spektrogram zůstává na šířku displeje. */
+.chart-wrap.scrollable {
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* ukazatel je absolutně přes graf, takže musí být uvnitř posuvné plochy */
+  -webkit-overflow-scrolling: touch;
+}
+.chart-wrap.scrollable .chart-head {
+  position: sticky; left: 0;
+  width: 100%;
+}
 
 /* ── přehrávač pod grafem ringu ── */
 .player {

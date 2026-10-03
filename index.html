@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Hlas">
-<link rel="stylesheet" href="src/style.css?v=15">
+<link rel="stylesheet" href="src/style.css?v=16">
 </head>
 <body>
 
@@ -166,6 +166,9 @@
   <section id="panel-progress" class="panel hidden">
     <p id="prog-text">Zpracovávám…</p>
     <div class="bar"><div id="prog-fill" class="bar-fill"></div></div>
+    <!-- Uplynulý čas a odhad jsou tu proto, aby šlo poznat rozdíl mezi
+         „počítá" a „zatuhlo". Pruh sám nikdy nestojí (viz startProgAnim). -->
+    <p class="prog-time"><span id="prog-elapsed">Uběhlo 0:00</span><span id="prog-eta"></span></p>
     <button id="btn-cancel" class="btn ghost" type="button">Zrušit</button>
   </section>
 
@@ -246,11 +249,13 @@
         <canvas id="c-spr" class="chart" height="230"></canvas>
         <canvas id="c-spr-head" class="chart-head" height="230" aria-hidden="true"></canvas>
       </div>
+      <p class="hint hidden" id="hint-scroll">Graf je širší než displej — jezdí se
+         po něm vodorovně, aby hodnoty u delších nahrávek nebyly nalepené.
+         Ukazatel se posouvá sám s nahrávkou.</p>
 
-      <h3>Ladění prvního formantu</h3>
-      <p class="hint" id="hint-f1"></p>
-      <canvas id="c-f1" class="chart" height="200"></canvas>
-
+      <!-- Spektrogram PATŘÍ POD graf ringu: oba jedou s nahrávkou, kdežto
+           „Ladění prvního formantu" je statické a nemá s přehráváním co dělat.
+           Když stál mezi nimi, rozbíjel dvojici grafů, které spolu souvisí. -->
       <h3>Spektrogram</h3>
       <p class="hint">Světlejší pruh kolem 2,5–3,2 kHz je pásmo zpěváckého
          formantu (ring). Kde pruh chybí, tam ring na tónu není.</p>
@@ -258,6 +263,10 @@
         <canvas id="c-spec" class="chart tall" height="300"></canvas>
         <canvas id="c-spec-head" class="chart-head tall" height="300" aria-hidden="true"></canvas>
       </div>
+
+      <h3>Ladění prvního formantu</h3>
+      <p class="hint" id="hint-f1"></p>
+      <canvas id="c-f1" class="chart" height="200"></canvas>
 
       <details class="tips">
         <summary>Naměřené hodnoty a čísla (pro podrobné srovnání)</summary>
@@ -338,6 +347,6 @@
 
 <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
-<script type="module" src="src/app.js?v=15"></script>
+<script type="module" src="src/app.js?v=16"></script>
 </body>
 </html>

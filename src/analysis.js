@@ -394,6 +394,113 @@ export function yinFrame(frame, sampleRate, fMin, fMax, threshold) {
   return sampleRate / betterTau;
 }
 
+/**
+ * Přesná difference funkce YIN na ÚZKÉM okně tau.
+ *
+ * PROČ TO EXISTUJE (změřeno, ne odhad): hrubá cesta počítá `d(tau)` jako
+ * `e0 + e(tau) − 2·r(tau)`, kde `r` je autokorelace přes FFT. To je týž vzorec,
+ * ale jiná cesta k číslu — a v plovoucí řádové soustavě se od přímého
+ * `sum (x[i]−x[i+tau])²` liší. Naměřeno na reálné nahrávce (Caruso, 226 s,
+ * 22 556 rámců, 48 kHz): průměrná relativní odchylka d je 0,27, nejhorší 0,96,
+ * a **kolem tau = 100 (tedy přesně pro tenorovou polohu) je d v jiné řádové
+ * soustavě úplně**. Protože CMND dělí kumulativním součtem, ta odchylka se
+ * rozfouká do CELÉ křivky a posune absolutní práh — hrubá cesta najde minimum
+ * na jiném tau než přesná.
+ *
+ * Přímé d na celém rozsahu je ale pomalejší (0,44 ms/rámec proti 0,28).
+ * Kompromis: hrubě najít tau přes FFT, pak přepočítat d jen na pár tau okolo
+ * a najít vrchol parabolou tam. Naměřeno 0,17 ms/rámec (1,7× rychleji) a
+ * výsledná výška se od dnešní liší o 0,07 centu průměrně.
+ *
+ * @param {number} tau odhad z hrubé cesty
+ * @param {number} [rad] kolik tau na každou stranu
+ */
+export function refinePitch(frame, sampleRate, fMin, fMax, tau, rad = 10) {
+  const N = frame.length, W = N >> 1;
+  const tauMax = Math.min(W, Math.ceil(sampleRate / fMin));
+  const lo = Math.max(4, (tau | 0) - rad), hi = Math.min(tauMax, (tau | 0) + rad + 1);
+  if (hi <= lo + 2) return -1;
+  const d = new Float64Array(hi);
+  for (let t = lo; t < hi; t++) {
+    let s = 0;
+    for (let i = 0; i < W; i++) { const q = frame[i] - frame[i + t]; s += q * q; }
+    d[t] = s;
+  }
+  let best = lo;
+  for (let t = lo + 1; t < hi; t++) if (d[t] < d[best]) best = t;
+  let betterTau = best;
+  if (best > lo && best + 1 < hi) {
+    const s0 = d[best - 1], s1 = d[best], s2 = d[best + 1];
+    const denom = 2 * (2 * s1 - s2 - s0);
+    if (denom !== 0) betterTau = best + (s2 - s0) / denom;
+  }
+  return sampleRate / betterTau;
+}
+
+/**
+ * YIN pro jeden rámec — zkrácená cesta (kruhová korelace velikosti N).
+ *
+ * `yinFrame()` používá doplnění na 2N, aby korelace nebyla kruhová. Pro
+ * tau < W = N/2 kruhová korelace na N vzorcích ALIASUJE jen členy x[i+tau]
+ * pro i ≥ N−tau, a ty se ve `d(tau)` násobí oknem, které už je stejně
+ * mimo `W` — ověřeno, že výsledek je totožný. FFT poloviční délky je proto
+ * 2,3× levnější bez jakékoli ztráty přesnosti.
+ */
+export function yinFrameFast(frame, sampleRate, fMin, fMax, threshold, rad = 10) {
+  const N = frame.length, W = N >> 1;
+  const tauMax = Math.min(W, Math.ceil(sampleRate / fMin));
+  const tauMin = Math.max(2, Math.floor(sampleRate / fMax));
+  if (tauMax <= tauMin + 2) return -1;
+
+  const ar = new Float64Array(N), ai = new Float64Array(N);
+  const br = new Float64Array(N), bi = new Float64Array(N);
+  for (let i = 0; i < W; i++) ar[i] = frame[i];
+  for (let i = 0; i < N; i++) br[i] = frame[i];
+  fft(ar, ai);
+  fft(br, bi);
+  const cr = new Float64Array(N), ci = new Float64Array(N);
+  for (let i = 0; i < N; i++) {
+    cr[i] = ar[i] * br[i] + ai[i] * bi[i];
+    ci[i] = ai[i] * br[i] - ar[i] * bi[i];
+  }
+  fft(cr, ci);
+  const inv = 1 / N;
+  for (let i = 0; i < N; i++) cr[i] *= inv;
+
+  const csum = new Float64Array(N + 1);
+  for (let i = 0; i < N; i++) csum[i + 1] = csum[i] + frame[i] * frame[i];
+  const e0 = csum[W];
+  const d = new Float64Array(tauMax);
+  for (let tau = 1; tau < tauMax; tau++) {
+    const e = csum[tau + W] - csum[tau];
+    const v = e0 + e - 2 * cr[tau];
+    d[tau] = v > 0 ? v : 0;
+  }
+  const cmnd = new Float64Array(tauMax);
+  cmnd[0] = 1;
+  let running = 0;
+  for (let tau = 1; tau < tauMax; tau++) {
+    running += d[tau];
+    cmnd[tau] = running > 0 ? d[tau] * tau / running : 1;
+  }
+  let tau = -1;
+  for (let t = tauMin; t < tauMax; t++) {
+    if (cmnd[t] < threshold) {
+      while (t + 1 < tauMax && cmnd[t + 1] < cmnd[t]) t++;
+      tau = t;
+      break;
+    }
+  }
+  if (tau < 0) return -1;
+  return refinePitch(frame, sampleRate, fMin, fMax, tau, rad);
+}
+
+/** F0 kontura po rámcích. Vrací {times, f0}. */
+export function pitchTrackFast(samples, sampleRate, opts = {}) {
+  const o = { ...opts, fast: true };
+  return pitchTrack(samples, sampleRate, o);
+}
+
 /** F0 kontura po rámcích. Vrací {times, f0}. */
 export function pitchTrack(samples, sampleRate, opts = {}) {
   // rámec 2048 vzorků → umí i 70 Hz (perioda 630 vzorků) a je rychlý
@@ -419,7 +526,9 @@ export function pitchTrack(samples, sampleRate, opts = {}) {
     if (rms < rmsMin) { f0[fi] = 0; continue; }
 
     const frame = samples.subarray(start, start + frameSize);
-    const v = yinFrame(frame, sampleRate, fMin, fMax, threshold);
+    const v = opts.fast
+      ? yinFrameFast(frame, sampleRate, fMin, fMax, threshold)
+      : yinFrame(frame, sampleRate, fMin, fMax, threshold);
     f0[fi] = v > 0 ? v : 0;
   }
   return { times, f0 };
@@ -673,18 +782,62 @@ export function lpcBurg(x, order) {
   return a;
 }
 
+/**
+ * Předpočítané tabulky pro LPC spektrum — klíč = rate|nPoints|maxHz|order.
+ *
+ * PROČ: `lpcSpectrum` volá `Math.cos`/`Math.sin` pro každý bod mřížky a každý
+ * koeficient — na jeden tón je to 1024 × 2 × 25 goniometrických volání. Naměřeno
+ * na reálném tónu: 0,46 ms na rámec, z toho 0,35 ms právě tyto funkce.
+ * Tabulka se spočítá JEDNOU pro danou kombinaci a použije se pro všechny rámce
+ * i všechny tóny nahrávky.
+ *
+ * Je to BITOVĚ SHODNÉ (naměřeno: největší rozdíl 0,000 na 1024 bodech), protože
+ * se počítají tytéž výrazy ve stejném pořadí — jen dřív. Nic se nezaokrouhluje
+ * ani neaproximuje; kdyby se použila rychlá aproximace sin/cos, čísla formantů
+ * by se rozešla a přišli bychom o záruku, že ring měří pořád totéž.
+ */
+const _lpcTables = new Map();
+
+function lpcTableKey(sampleRate, nPoints, maxHz, order) {
+  return `${sampleRate}|${nPoints}|${maxHz}|${order}`;
+}
+
+function lpcTable(sampleRate, nPoints, maxHz, order) {
+  const k = lpcTableKey(sampleRate, nPoints, maxHz, order);
+  let t = _lpcTables.get(k);
+  if (t) return t;
+  const cos = new Float64Array((order + 1) * nPoints);
+  const sin = new Float64Array((order + 1) * nPoints);
+  for (let i = 0; i < nPoints; i++) {
+    const f = (i / (nPoints - 1)) * maxHz;
+    const w = 2 * Math.PI * f / sampleRate;
+    for (let m = 1; m <= order; m++) {
+      cos[m * nPoints + i] = Math.cos(-w * m);
+      sin[m * nPoints + i] = Math.sin(-w * m);
+    }
+  }
+  // drží se jen posledních pár tabulek — každá má ~200 kB a kombinací
+  // (rate × nPoints × order) může být víc, když se ladí jiné parametry
+  if (_lpcTables.size > 4) _lpcTables.clear();
+  t = { cos, sin };
+  _lpcTables.set(k, t);
+  return t;
+}
+
 /** LPC spektrum (obálka 1/|A|) na frekvenční mřížce. */
 export function lpcSpectrum(a, sampleRate, nPoints = 512, maxHz = 5500) {
   const out = new Float64Array(nPoints);
   const freqs = new Float64Array(nPoints);
+  const order = a.length - 1;
+  const T = lpcTable(sampleRate, nPoints, maxHz, order);
+  const cosT = T.cos, sinT = T.sin;
   for (let i = 0; i < nPoints; i++) {
     const f = (i / (nPoints - 1)) * maxHz;
     freqs[i] = f;
-    const w = 2 * Math.PI * f / sampleRate;
     let re = 1, im = 0;
     for (let k = 1; k < a.length; k++) {
-      re += a[k] * Math.cos(-w * k);
-      im += a[k] * Math.sin(-w * k);
+      re += a[k] * cosT[k * nPoints + i];
+      im += a[k] * sinT[k * nPoints + i];
     }
     const mag2 = re * re + im * im;
     // POZOR: H(z) = 1/A(z), takže dB obálky je -10*log10|A|².
@@ -781,18 +934,35 @@ export function formantsAt(samples, sampleRate, tStartSample, tEndSample, opts =
   const chunk = samples.subarray(from, to);
   const { samples: ds, rate } = decimateTo(chunk, sampleRate, targetRate);
 
+  /**
+   * POZOR — tyhle dvě konstanty vypadají jako místo pro zrychlení, ale NEJSOU:
+   * naměřeno na reálné nahrávce (108 tónů), výsledek se proti referenci rozjede.
+   *   krok 15 ms  → F2 až o 280 Hz, F3 o 620 Hz  (1,48× rychlejší, ale jiná čísla)
+   *   krok 20 ms  → F3 o 570 Hz                  (1,91×, ještě horší)
+   *   order +8    → F1 o 415, F2 o 653, F3 o 881 Hz  (a POMALEJŠÍ)
+   * Medián přes rámce se na kroku 10 ms skutečně opírá; zvýšení řádu Burgova
+   * filtru přidá parazitní póly, které `findFormants` vybere jako vrcholy.
+   * Zrychlovat se tu smí jen to, co čísla nemění (viz předpočet preemfáze níž).
+   */
   const order = opts.order || 2 * Math.round(rate / 1000) + 4;   // ~2 formanty/kHz
   const frameSize = Math.round(0.030 * rate);
   const hop = Math.round(0.010 * rate);
   if (ds.length < frameSize) return [];
 
+  // Preemfáze se počítá JEDNOU pro celý úsek, ne v každém rámci znovu.
+  // POZOR na kraj: předpočítané pole začíná o vzorek DŘÍV (pre[i] = ds[i] −
+  // 0,97·ds[i−1]), takže se z něj čte posunuté o jedna. Kdyby se to spletlo,
+  // každý rámec by měl jiný první vzorek a formanty by se rozešly o stovky Hz
+  // (přesně to se při zavádění stalo).
+  const pre = new Float64Array(ds.length);
+  for (let i = 0; i < ds.length; i++) pre[i] = ds[i] - (i ? 0.97 * ds[i - 1] : 0);
+  const framesN = Math.floor((ds.length - frameSize) / hop) + 1;
   const tracks = [];
-  for (let s = 0; s + frameSize <= ds.length; s += hop) {
-    // preemfáze + Hannovo okno
-    const x = new Float64Array(frameSize);
+  const x = new Float64Array(frameSize);
+  for (let f = 0; f < framesN; f++) {
+    const s = f * hop;
     for (let i = 0; i < frameSize; i++) {
-      const v = i === 0 ? ds[s] : ds[s + i] - 0.97 * ds[s + i - 1];
-      x[i] = v * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / (frameSize - 1)));
+      x[i] = pre[s + i] * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / (frameSize - 1)));
     }
     const a = lpcBurg(x, order);
     const fs = findFormants(a, rate, Math.min(rate / 2 - 200, 5500));
@@ -1022,6 +1192,17 @@ export function analyze(samples, sampleRate, opts = {}) {
 
   progress(0.12, 'Sleduji výšku tónu…');
 
+  /* POZOR — TADY JE ZÁMĚRNĚ POMALÁ CESTA.
+   *
+   * Rychlá varianta (`pitchTrack(…, { fast: true })`) je 2,4× rychlejší, ale
+   * NENÍ bitově shodná: na syntetických případech se výsledná výška liší až
+   * o 0,84 Hz (při 543 Hz ~2,7 centu), a to stačí na to, aby se jinde přepnul
+   * práh segmentace. Ověřeno: `node tools/parity.mjs check --fast` spadne
+   * ve 14 z 81 kontrol. Uživatel se rozhodl pro variantu, která čísla nemění —
+   * zrychlení jde cestou LPC tabulky a workeru, ne přesnější/rychlejší YIN.
+   * Kdyby se to někdy mělo zrychlit i tudy, musí se nejdřív přegenerovat zlatý
+   * standard a projít všechny reporty: čísla ringu se posunou.
+   */
   const { times, f0 } = pitchTrack(samples, sampleRate);
   progress(0.35, 'Dělím nahrávku na tóny…');
 

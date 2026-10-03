@@ -5,7 +5,7 @@
 import { analyze, REFS, czPlural, vyhodnotFhe, fheLabel } from './analysis.js';
 import {
   drawSpr, drawF1, drawSpec, drawTrend, fmt,
-  sprGeom, drawSpecHead, drawSprHead, clearHead, SPR_H, SPEC_H,
+  sprGeom, drawSpecHead, drawSprHead, clearHead, SPR_H, SPEC_H, sprNeededWidth,
 } from './charts.js';
 import { initLive } from './live-ui.js';
 import { sniffSampleRate } from './sample-rate.js';
@@ -190,50 +190,165 @@ async function decodeViaElement(blob) {
 function runAnalysis(samples, sampleRate, label, blob, fileRate = NaN) {
   cancelled = false;
   const fach = $('fach').value;
-  showProgress(0.05, 'Spouštím analýzu…');
+  showProgress(0.05, 'Spouštím analýzu…', 0);
 
-  // nechat prohlížeči vykreslit progress bar
-  setTimeout(() => {
+  const t0 = performance.now();
+  const done = (res) => {
     if (cancelled) return;
-    const t0 = performance.now();
-    let res;
-    try {
-      res = analyze(samples, sampleRate, {
-        fach,
-        fileRate,                  // původní kmitočet souboru (dekódování ho přepíše)
-        onProgress: (p, msg) => { if (!cancelled) showProgress(p, msg); },
-      });
-    } catch (e) {
-      console.error(e);
-      alert('Analýza selhala: ' + e.message);
-      hideProgress();
-      $('panel-input').classList.remove('hidden');
-      return;
-    }
     const secs = (performance.now() - t0) / 1000;
     console.log(`[i] analýza ${samples.length / sampleRate | 0} s audia za ${secs.toFixed(1)} s`);
-    if (cancelled) return;
-
     current = {
       result: res, samples, sampleRate, label, date: new Date().toISOString(),
       buffer: blob,               // originál — přehrávač si ho přehraje, ne dekódované vzorky
       url: URL.createObjectURL(blob),
     };
     showResult(res, samples, sampleRate, label, secs);
-  }, 40);
+  };
+  const failed = (msg) => {
+    alert('Analýza selhala: ' + msg);
+    hideProgress();
+    $('panel-input').classList.remove('hidden');
+  };
+
+  /* Analýza běží ve WORKERU.
+   *
+   * PROČ: je synchronní a na čtyřminutové nahrávce trvá desítky sekund. V hlavním
+   * vlákně se za tu dobu nespustí ani intervaly, ani animace — progress bar
+   * zůstane stát a aplikace se tváří zaseknutá. (Dřív tu bylo `setTimeout(…, 40)`
+   * s domněnkou, že to stačí na vykreslení lišty; na 40 ms se lišta sice
+   * vykreslila, ale pak už se nic nehýbalo — a hlavně se během analýzy nedalo
+   * vůbec nic dělat, ani stisknout „Zrušit".)
+   *
+   * Worker dostane vzorky přes transfer (žádná kopie) a posílá zpět průběh.
+   * Když worker nejde spustit (starý prohlížeč, `file://`), spadne se na
+   * původní běh v hlavním vlákně — analýza musí proběhnout vždy. */
+  let worker = null;
+  try {
+    worker = new Worker(new URL('./analyze-worker.js', import.meta.url), { type: 'module' });
+  } catch (e) {
+    console.warn('[i] Worker nejde spustit, analyzuji v hlavním vlákně', e);
+  }
+
+  if (!worker) {
+    setTimeout(() => {
+      if (cancelled) return;
+      try {
+        done(analyze(samples, sampleRate, {
+          fach, fileRate,
+          onProgress: (p, msg) => { if (!cancelled) showProgress(p, msg); },
+        }));
+      } catch (e) {
+        console.error(e);
+        failed(e.message);
+      }
+    }, 40);
+    return;
+  }
+
+  worker.onmessage = (ev) => {
+    const m = ev.data || {};
+    if (cancelled) { worker.terminate(); worker = null; return; }
+    if (m.type === 'progress') { showProgress(m.p, m.msg); return; }
+    worker.terminate();
+    worker = null;
+    if (m.type === 'error') { failed(m.message); return; }
+    done(m.res);
+  };
+  worker.onerror = (ev) => {
+    console.warn('[i] Worker selhal, analyzuji v hlavním vlákně', ev.message);
+    if (worker) { worker.terminate(); worker = null; }
+    if (cancelled) return;
+    try {
+      done(analyze(samples, sampleRate, {
+        fach, fileRate,
+        onProgress: (p, msg) => { if (!cancelled) showProgress(p, msg); },
+      }));
+    } catch (e) { failed(e.message); }
+  };
+
+  const copy = Float64Array.from(samples);          // vzorky jdou do workeru
+  worker.postMessage({ samples: copy, sampleRate, opts: { fach, fileRate } }, [copy.buffer]);
 }
 
 /* ═══════════════════════════════════════ UI: průběh */
 
-function showProgress(p, msg) {
+/**
+ * Průběh analýzy.
+ *
+ * Dvě věci, které se nesmí pokazit:
+ *  1. **Pruh se nikdy nesmí zastavit.** Analýza hlásí fáze, ale mezi fázemi
+ *     (`Měřím tóny…`) se hlásí jen každý desátý tón — na pomalém telefonu je to
+ *     klidně několik sekund a pruh stojí. Proto má pruh i „měkkou" složku, která
+ *     po dobu fáze pomalu roste k jejímu konci. Uživatel tak vždycky vidí, že se
+ *     něco děje.
+ *  2. **Musí být vidět, jak dlouho to běží a jak dlouho to ještě potrvá.** Bez
+ *     času nemá člověk jak poznat rozdíl mezi „počítá" a „zatuhlo".
+ */
+let progAnim = null;
+let progStart = 0;
+let progFrac = 0;        // tvrdá hodnota z analýzy
+let progSoft = 0;        // měkká (dorůstající) hodnota, ze které se kreslí
+let progCeil = 0.05;     // kam smí měkká hodnota dorůst
+
+function fmtDur(s) {
+  if (!(s >= 0)) return '—';
+  const m = Math.floor(s / 60), x = Math.floor(s % 60);
+  return `${m}:${String(x).padStart(2, '0')}`;
+}
+
+function showProgress(p, msg, elapsedS = null) {
   $('panel-input').classList.add('hidden');
   $('panel-result').classList.add('hidden');
   $('panel-progress').classList.remove('hidden');
-  $('prog-fill').style.width = Math.round(p * 100) + '%';
+
+  const first = progAnim === null;
+  if (first) { progStart = performance.now(); progSoft = 0; progCeil = 0.05; }
+  if (typeof p === 'number' && p >= progFrac) {
+    progFrac = p;
+    // strop pro měkkou hodnotu: kousek před dalším hlášením
+    progCeil = Math.min(0.995, p + Math.max(0.02, (1 - p) * 0.25));
+  }
   $('prog-text').textContent = msg;
+  const el = elapsedS === null ? (performance.now() - progStart) / 1000 : elapsedS;
+  $('prog-elapsed').textContent = 'Uběhlo ' + fmtDur(el);
+  $('prog-eta').textContent = '';
+
+  if (first) startProgAnim();
+}
+
+/**
+ * Měkce dorůstající pruh + odhad zbývajícího času.
+ * Běží, dokud je panel průběhu viditelný — zastaví se sám, aby nic nežral
+ * na pozadí.
+ */
+function startProgAnim() {
+  cancelAnimationFrame(progAnim);
+  const step = () => {
+    if ($('panel-progress').classList.contains('hidden')) { progAnim = null; return; }
+    const el = (performance.now() - progStart) / 1000;
+    // k tvrdé hodnotě se blíží pomalu, aby pruh nikdy nestál
+    progSoft += Math.max(0, progCeil - progSoft) * 0.02;
+    const shown = Math.max(progFrac, Math.min(progSoft, progCeil));
+    $('prog-fill').style.width = (shown * 100).toFixed(1) + '%';
+    $('prog-elapsed').textContent = 'Uběhlo ' + fmtDur(el);
+    /* Odhad zbývajícího času se ukáže až po pár sekundách a jen dokud neběží
+     * poslední fáze — z odhadu z prvních dvou procent by vyšel nesmysl
+     * (typicky „zbývá 40 minut") a v poslední fázi už je zbytečný. */
+    if (el > 3 && shown > 0.10 && progFrac < 0.9) {
+      const eta = el / shown - el;
+      $('prog-eta').textContent = ' · zbývá asi ' + fmtDur(eta);
+    } else {
+      $('prog-eta').textContent = '';
+    }
+    progAnim = requestAnimationFrame(step);
+  };
+  progAnim = requestAnimationFrame(step);
 }
 
 function hideProgress() {
+  cancelAnimationFrame(progAnim);
+  progAnim = null;
+  progFrac = 0; progSoft = 0;
   $('panel-progress').classList.add('hidden');
 }
 
@@ -336,8 +451,9 @@ function showResult(res, samples, sampleRate, label, secs) {
 
   // grafy — drawSpr vrací geometrii, kterou používá klik do grafu i přehrávač
   requestAnimationFrame(() => {
-    sprGeomRef = drawSpr($('c-spr'), res.notes, s);
+    sprGeomRef = drawSpr($('c-spr'), res.notes, s, null, sprDrawOpts());
     drawF1($('c-f1'), res.notes, $('hint-f1'));
+    // spektrogram se kreslí až po přesunu pod graf ringu (viz layout níž)
     drawSpec($('c-spec'), samples, sampleRate, res.notes);
     setupPlayer();
     updatePlayheadUI();
@@ -620,6 +736,63 @@ let sprGeomRef = null;     // geometrie grafu ringu (z drawSpr) — pro klik a u
 let lastHeadT = -1;        // poslední vykreslený čas, ať se nekreslí pořád totéž
 
 /**
+ * Posuvné plátno grafu ringu.
+ *
+ * PROČ: na 4minutové nahrávce se sto tónů nalepí na ~700 px, takže ze sloupců
+ * je jednolitá plocha a nejde poznat, který tón má ring a který ne. Graf proto
+ * dostane takovou šířku, aby každý tón měl aspoň 6 px, a jezdí se po něm
+ * vodorovně. Graf se posouvá jen tehdy, když je potřeba (do šířky telefonu se
+ * vejde málo tónů) — krátké nahrávky se chovají jako dřív, bez posuvu.
+ *
+ * Průhledné plátno s ukazatelem musí mít stejnou šířku i stejný posuv, jinak
+ * by čára jela jinde než graf pod ní (přesně tahle past se u ukazatele už
+ * jednou řešila).
+ */
+const sprScroll = { width: 0, offX: 0 };
+
+function sprDrawOpts() {
+  return { width: sprScroll.width, offX: sprScroll.offX };
+}
+
+function layoutSpr() {
+  const chart = $('c-spr'), head = $('c-spr-head');
+  if (!chart || !current) return;
+  const avail = chart.parentElement?.clientWidth || chart.clientWidth || 600;
+  const need = sprNeededWidth(avail, current.result.notes, current.result.duration_s);
+  sprScroll.width = need;
+  if (!need) sprScroll.offX = 0;
+  chart.style.width = need ? need + 'px' : '';
+  if (head) head.style.width = need ? need + 'px' : '';
+  const wrap = chart.parentElement;
+  if (wrap) {
+    wrap.classList.toggle('scrollable', !!need);
+    // ukazatel se drží ve viditelném okně, aby nebyl mimo obrazovku
+    if (need) {
+      const g = sprGeomRef || { pxAtTimeTime: null };
+      const t = player?.el?.currentTime || 0;
+      if (g && typeof g.pxAtTime === 'function') {
+        const x = g.pxAtTime(t);
+        const view = wrap.scrollLeft;
+        if (x < view + 60 || x > view + wrap.clientWidth - 60) {
+          wrap.scrollLeft = Math.max(0, x - wrap.clientWidth / 2);
+        }
+      }
+    }
+  }
+  sprGeomRef = drawSpr(chart, current.result.notes, current.result.summary, null, sprDrawOpts());
+  paintHeads(player?.el?.currentTime || 0, true);
+}
+
+function onSprScroll() {
+  const wrap = $('c-spr')?.parentElement;
+  if (!wrap) return;
+  sprScroll.offX = wrap.scrollLeft;
+  if (!current) return;
+  sprGeomRef = drawSpr($('c-spr'), current.result.notes, current.result.summary, null, sprDrawOpts());
+  paintHeads(player?.el?.currentTime || 0, true);
+}
+
+/**
  * Nastaví přehrávač na právě změřenou nahrávku.
  *
  * Přehrává se PŮVODNÍ blob, ne dekódované vzorky — zvuk je pak přesně to, co
@@ -651,7 +824,16 @@ function setupPlayer() {
   $('seek').oninput = onSeekInput;
   $('c-spr').onclick = onChartClick;
   $('c-spec').onclick = onChartClick;
-  updatePlayheadUI();
+  // posuvné plátno ringu: klik do grafu i ukazatel musí počítat s posuvem
+  const sprWrap = $('c-spr').parentElement;
+  if (sprWrap) {
+    sprWrap.onscroll = onSprScroll;
+    sprScroll.offX = 0;
+  }
+  layoutSpr();
+  const hintScroll = $('hint-scroll');
+  if (hintScroll) hintScroll.classList.toggle('hidden', !sprScroll.width);
+  updatePlayheadUI(true);
 }
 
 function teardownPlayer() {
@@ -719,7 +901,11 @@ function onSeekInput() {
 function onChartClick(e) {
   if (!player) return;
   const cv = e.currentTarget;
-  const px = e.clientX - cv.getBoundingClientRect().left;
+  const rect = cv.getBoundingClientRect();
+  // Při posuvu je `e.clientX` v okně, ale geometrie grafu je v souřadnicích
+  // plátna — rozdíl je právě `scrollLeft`. Bez toho by klik po odscrollování
+  // hledal o kus vedle (klik by seděl jen při scrollu 0).
+  const px = e.clientX - rect.left + (cv.id === 'c-spr' ? sprScroll.offX : 0);
   let t;
   if (cv.id === 'c-spr') {
     if (!sprGeomRef) return;
@@ -733,7 +919,7 @@ function onChartClick(e) {
   player.el.currentTime = t;
   // smyčka se váže na tón — po přesunu je potřeba ji přepočítat
   if (player.loopNote) player.loopNote = noteAt(t);
-  updatePlayheadUI();
+  updatePlayheadUI(true);
 }
 
 /**
@@ -743,7 +929,7 @@ function onChartClick(e) {
  * ~4× za sekundu — s ním by čára poskakovala. rAF se sám zastaví, když se nic
  * nezměnilo (pauza), takže na pozadí nic nežere.
  */
-function updatePlayheadUI() {
+function updatePlayheadUI(force = false) {
   if (!player) return;
   const el = player.el;
   const d = el.duration || current?.result?.duration_s || 0;
@@ -755,7 +941,9 @@ function updatePlayheadUI() {
     `${pm}:${String(ps).padStart(2, '0')} / ${dm}:${String(ds).padStart(2, '0')}`;
   if (!player.seeking && d > 0) $('seek').value = String(Math.round((t / d) * 1000));
 
-  paintHeads(t);
+  // Při přehrávání se graf ringu posouvá s ukazatelem, aby byl pořád vidět.
+  if (sprScroll.width && !player.seeking) followSprScroll(t);
+  paintHeads(t, force);
 
   if (!el.paused) {
     cancelAnimationFrame(player.raf);
@@ -763,12 +951,26 @@ function updatePlayheadUI() {
   }
 }
 
+/** Drží ukazatel v okně posuvného grafu ringu. */
+function followSprScroll(t) {
+  const wrap = $('c-spr')?.parentElement;
+  if (!wrap || !sprGeomRef?.pxAtTime) return;
+  const x = sprGeomRef.pxAtTime(t);
+  const view = wrap.scrollLeft;
+  const w = wrap.clientWidth;
+  if (x < view + 40 || x > view + w - 40) {
+    const target = Math.max(0, x - w / 2);
+    wrap.scrollLeft = target;
+    sprScroll.offX = target;
+  }
+}
+
 /** Vykreslí čáru na oba grafy; přeskočí, když se čas nezměnil. */
-function paintHeads(t) {
-  if (Math.abs(t - lastHeadT) < 0.004) return;
+function paintHeads(t, force = false) {
+  if (!force && Math.abs(t - lastHeadT) < 0.004) return;
   lastHeadT = t;
   const s = current?.result?.summary;
-  if (s) drawSprHead($('c-spr-head'), current.result.notes, s, t);
+  if (s) drawSprHead($('c-spr-head'), current.result.notes, s, t, sprDrawOpts());
   const dur = current?.result?.duration_s;
   if (dur) drawSpecHead($('c-spec-head'), dur, t);
 }
@@ -843,6 +1045,9 @@ function init() {
   $('btn-new').onclick = () => {
     teardownPlayer();
     lastHeadT = -1;
+    sprScroll.width = 0; sprScroll.offX = 0;
+    const w = $('c-spr')?.parentElement;
+    if (w) { w.classList.remove('scrollable'); w.onscroll = null; }
     clearHead($('c-spr-head'), SPR_H);
     clearHead($('c-spec-head'), SPEC_H);
     if (current?.url) URL.revokeObjectURL(current.url);
