@@ -157,13 +157,66 @@ check('tlačítko má přiřazenou akci', typeof el('btn-update').onclick === 'f
 
   // Teprve teď prohlížeč ohlásí, že nový worker převzal kontrolu
   emit('controllerchange');
-  await sleep(450);
+  // Reload je záměrně ODLOŽENÝ, aby uživatel stihl vidět potvrzení.
+  await sleep(400);
+  check('reload se odloží, aby bylo potvrzení vidět', reloadCount === 0,
+    `reloadů po 400 ms: ${reloadCount}`);
+  check('potvrzení je vidět i po skončení kontroly', !el('toast').classList.contains('hidden'),
+    'toast: ' + JSON.stringify(toastText()));
+  check('potvrzení zmiňuje aktualizaci', toastText().includes('Aktualizováno'),
+    'toast: ' + JSON.stringify(toastText()));
+
+  await sleep(1200);
   check('reload proběhl až po controllerchange', reloadCount === 1, `reloadů: ${reloadCount}`);
 
   await p;
   await sleep(50);
   check('spinner po dokončení zmizí', isSpinning() === false);
   check('tlačítko je zase aktivní', el('btn-update').disabled === false);
+}
+
+/* ── 1b. spinner musí být vidět i u běžné kontroly (ne jen bliknout) ─────── */
+
+{
+  reg._reset();
+  updateBehaviour = async () => {};      // žádná nová verze
+  const p = clickUpdate();
+  await sleep(100);
+  check('spinner se ukáže hned po kliku', isSpinning() === true);
+  await sleep(3200);
+  check('u aktuální verze spinner chvíli vydrží, ne jen blikne',
+    /minSpinnerMs/.test(fs.readFileSync(APP, 'utf8')),
+    'kód musí spinner podržet minimální dobu');
+  await p;
+}
+
+/* ── 1c. verze aplikace musí být dohledatelná ────────────────────────────── */
+
+{
+  // Bez zobrazené verze nemá uživatel po aktualizaci jak zjistit, že proběhla.
+  const appSrc = fs.readFileSync(APP, 'utf8');
+  const swSrc = fs.readFileSync(path.join(DIR, '..', 'sw.js'), 'utf8');
+  const htmlSrc = fs.readFileSync(path.join(DIR, '..', 'index.html'), 'utf8');
+
+  check('index.html má prvek pro verzi', /id="app-ver"/.test(htmlSrc),
+    'chybí #app-ver v index.html');
+  check('sw.js nese APP_VERSION', /APP_VERSION\s*=/.test(swSrc),
+    'sw.js musí mít APP_VERSION');
+  check('APP_VERSION odpovídá číslu v CACHE',
+    (() => {
+      const cv = (swSrc.match(/const CACHE = 'vocal-lab-v(\d+)'/) || [])[1];
+      const av = (swSrc.match(/APP_VERSION\s*=\s*'([0-9.]+)'/) || [])[1];
+      return !!cv && av === '1.0.' + cv;                 // v9 → 1.0.9
+    })(),
+    'APP_VERSION musí odpovídat CACHE (v9 → 1.0.9)');
+  check('verze se načítá ze serveru, ne z běžícího skriptu',
+    /cache:\s*['"]no-store['"]/.test(appSrc) && /fetchVersionOf\(['"]sw\.js['"]\)/.test(appSrc),
+    'verze se musí číst z sw.js s cache: no-store');
+  check('verze se zobrazí při startu aplikace', /showVersions\(\)/.test(appSrc),
+    'showVersions() se musí volat po registraci');
+  check('reload má odklad aspoň 300 ms',
+    /setTimeout\(\(\)\s*=>\s*location\.reload\(\),\s*\d{3,}/.test(appSrc),
+    'reload musí mít odklad, aby hláška byla vidět');
 }
 
 /* ── 2. nic nového na serveru ───────────────────────────────────────────── */

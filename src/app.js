@@ -7,6 +7,7 @@ import {
   drawSpr, drawF1, drawSpec, drawTrend, fmt,
   sprGeom, drawSpecHead, drawSprHead, clearHead, SPR_H, SPEC_H,
 } from './charts.js';
+import { initLive } from './live-ui.js';
 
 const $ = (id) => document.getElementById(id);
 const HIST_KEY = 'vocal-lab.history.v1';
@@ -462,6 +463,37 @@ function addToHistory() {
   setTimeout(() => { $('btn-save').textContent = 'Uložit do historie'; $('btn-save').disabled = false; }, 1600);
 }
 
+/**
+ * Uloží živé měření do historie.
+ *
+ * Tvar záznamu je ZÁMĚRNĚ stejný jako u analýzy nahrávky, aby tabulka i trend
+ * fungovaly bez dalších změn. Dvě věci se ale liší a musí být vidět:
+ *   live: true  — v tabulce se pozná, že nejde o analýzu celé nahrávky
+ *   ring_pct    — živý režim vyrovnanost ringu ZMĚŘIT NEUMÍ (na to je potřeba
+ *                 segmentovat tóny z celé nahrávky), takže zůstává prázdné
+ */
+function addLiveToHistory(s) {
+  const rows = loadHist();
+  rows.unshift({
+    date: new Date().toISOString(),
+    label: 'Živé měření',
+    fach: s.fach,
+    n_notes: s.voicedFrames,
+    spr_unusable: !Number.isFinite(s.sprMedian),
+    reason: Number.isFinite(s.sprMedian) ? null : 'málo zpívaných rámců',
+    spr_median: Number.isFinite(s.sprMedian) ? s.sprMedian : null,
+    spr_sd: Number.isFinite(s.centsSpread) ? s.centsSpread : null,
+    ring_pct: null,
+    fhe: Number.isFinite(s.fheMedian) ? s.fheMedian : null,
+    live: true,
+    seconds: s.seconds,
+    peak_dbfs: Number.isFinite(s.peakDbfs) ? s.peakDbfs : null,
+  });
+  saveHist(rows);
+  renderHist();
+  showToast('Živé měření uloženo.');
+}
+
 function renderHist() {
   const rows = loadHist();
   const empty = $('hist-empty'), tbl = $('t-hist'), cv = $('c-trend');
@@ -480,8 +512,8 @@ function renderHist() {
     const td = (t, cls) => { const e = document.createElement('td'); e.textContent = t; if (cls) e.className = cls; return e; };
     tr.append(
       td(new Date(r.date).toLocaleString('cs-CZ', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })),
-      td(r.fach),
-      td(r.spr_unusable ? '—' : (r.ring_pct != null ? r.ring_pct.toFixed(0) + ' %' : '—')),
+      td(r.live ? r.fach + ' (živě)' : r.fach),
+      td(r.live ? '—' : (r.spr_unusable ? '—' : (r.ring_pct != null ? r.ring_pct.toFixed(0) + ' %' : '—'))),
       td(r.spr_unusable ? 'nelze' : (r.spr_median != null ? r.spr_median.toFixed(1) : '—')),
       td(String(r.n_notes)),
       td(r.fhe ? Math.round(r.fhe) : '—'),
@@ -748,6 +780,9 @@ function init() {
     }
   };
 
+  // Živý režim — ovládání si drží live-ui.js, sem se předává jen ukládání.
+  initLive(addLiveToHistory);
+
   $('file-input').onchange = async (e) => {
     const f = e.target.files[0];
     if (!f) return;
@@ -791,12 +826,53 @@ let swReg = null;
 let swChecking = false;
 let reloading = false;
 
+/**
+ * Zjistí, jaká verze aplikace právě běží.
+ *
+ * Proč to není jen konstanta v app.js: po aktualizaci se mění `sw.js`, ne
+ * `app.js`. Když se verze bere z běžícího skriptu, po aktualizaci se číslo
+ * nezmění a uživatel nemá jak poznat, že se něco stalo. Proto se verze čte
+ * ze SERVERU (`sw.js`, přes `cache: 'no-store'`) a porovnává se s verzí
+ * aktivního service workeru.
+ *
+ * Vrací { server, aktivni } — chybí, když se to nepodaří zjistit.
+ */
+async function fetchVersionOf(url) {
+  try {
+    const r = await fetch(url, { cache: 'no-store' });
+    if (!r.ok) return null;
+    const t = await r.text();
+    const m = t.match(/APP_VERSION\s*=\s*['"]([^'"]+)['"]/);
+    return m ? m[1] : null;
+  } catch { return null; }
+}
+
+async function showVersions() {
+  const el = $('app-ver');
+  if (!el) return;
+  const aktivni = await fetchVersionOf('sw.js');   // co obsluhuje stránku
+  const server = aktivni;                          // bez cache je totožné s nasazeným
+  el.textContent = aktivni || '—';
+  el.title = server ? `Běží verze ${aktivni}.` : '';
+}
+
 function showToast(msg) {
   const el = $('toast');
   el.textContent = msg;
   el.classList.remove('hidden');
   clearTimeout(showToast._t);
   showToast._t = setTimeout(() => el.classList.add('hidden'), 2600);
+}
+
+/** Ukáže hlášku, která NEMÁ zmizet sama — u výsledku aktualizace to jinak
+    blikne a uživatel si není jistý, co se stalo. */
+
+function showToastSticky(msg, ms = 9000) {
+  const el = $('toast');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => el.classList.add('hidden'), ms);
 }
 
 function setUpdating(on) {
@@ -846,6 +922,12 @@ async function checkForUpdate() {
     // sw.js. Když nic nového není, nevyletí vůbec a žádný signál „hotovo, nic
     // není" neexistuje — proto se čeká jen krátce. Delší čekání by znamenalo
     // spinner navíc u každého kliknutí, kdy je aplikace aktuální.
+    //
+    // ALE: stejně krátká doba znamená, že u aktuální aplikace spinner blikne
+    // a zmizí — uživatel nabude dojmu, že tlačítko nic nedělá. Proto se
+    // spinner drží ještě MINIMÁLNÍ dobu, aby byl klik vůbec vidět.
+    const t0 = Date.now();
+    const minSpinnerMs = 900;
     let worker = swReg.waiting || swReg.installing;
     if (!worker) {
       worker = await new Promise((resolve) => {
@@ -861,7 +943,10 @@ async function checkForUpdate() {
     }
 
     if (!worker) {
-      showToast('Máš nejnovější verzi.');
+      const zbývá = minSpinnerMs - (Date.now() - t0);
+      if (zbývá > 0) await new Promise(r => setTimeout(r, zbývá));
+      const v = await fetchVersionOf('sw.js');
+      showToastSticky(v ? `Máš nejnovější verzi (${v}).` : 'Máš nejnovější verzi.');
       return;
     }
 
@@ -877,20 +962,27 @@ async function checkForUpdate() {
     // Reload až ve chvíli, kdy nový worker převezme kontrolu. Kdyby se
     // reloadovalo dřív, stránku by ještě obsluhoval starý worker a uživatel
     // by viděl pořád tu samou verzi.
+    //
+    // POZOR: `finally` níže sundá spinner i při reloadu, takže uživatel
+    // u rychlé aktualizace nevidí skoro nic. Proto se před reloadem ukáže
+    // POTVRZENÍ, které chvíli drží — a v patičce je vidět číslo verze,
+    // takže je dohledatelné i zpětně, že se verze změnila.
     if (swReg.waiting) {
       const onControl = () => {
         if (reloading) return;
         reloading = true;
-        showToast('Aktualizováno, načítám…');
-        setTimeout(() => location.reload(), 250);
+        setUpdating(false);
+        showToastSticky('Aktualizováno na novou verzi, načítám…', 1200);
+        setTimeout(() => location.reload(), 1200);
       };
       navigator.serviceWorker.addEventListener('controllerchange', onControl);
       swReg.waiting.postMessage({ type: 'SKIP_WAITING' });
     } else {
       // Nic nečeká na kontrolu (první instalace) — reload může hned.
       reloading = true;
-      showToast('Aktualizováno, načítám…');
-      setTimeout(() => location.reload(), 250);
+      setUpdating(false);
+      showToastSticky('Aktualizováno na novou verzi, načítám…', 1200);
+      setTimeout(() => location.reload(), 1200);
     }
   } catch (e) {
     console.warn('Kontrola aktualizace selhala', e);
@@ -911,6 +1003,7 @@ function registerSW() {
     .then((reg) => { swReg = reg; })
     .catch((e) => console.warn('Service worker se nepodařilo zaregistrovat', e));
   $('btn-update').onclick = checkForUpdate;
+  showVersions();
 }
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

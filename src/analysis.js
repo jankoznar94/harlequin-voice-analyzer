@@ -198,7 +198,8 @@ function ifftRealEven(re, im) {
  * autokorelaci:  d(tau) = e0 + e(tau) - 2*r(tau)
  * (de Cheveigné & Kawahara 2002)
  */
-function yinFrame(frame, sampleRate, fMin, fMax, threshold) {
+/** Exportováno i pro živý režim — záložní cesta v dsp-backend.js ho používá. */
+export function yinFrame(frame, sampleRate, fMin, fMax, threshold) {
   const N = frame.length;
   const W = N >> 1;                                  // délka okna pro srovnávání
   const tauMax = Math.min(W, Math.ceil(sampleRate / fMin));

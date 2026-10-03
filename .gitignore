@@ -14,3 +14,8 @@ Thumbs.db
 # firebase debug
 firebase-debug.log
 firebase-debug.*.log
+
+# WASM: zdroj je v wasm/src/dsp.ts, tohle je jen přeložený výstup pro ladění.
+# Přeložené .wasm se v repu ZÁMĚRNĚ drží (načítá ho aplikace i service worker),
+# .wat je jen čitelná podoba pro ruční kontrolu — tu v repu nepotřebujeme.
+wasm/build/*.wat

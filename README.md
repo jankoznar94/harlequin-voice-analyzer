@@ -58,16 +58,64 @@ python3 -m http.server 8123
 Nasazení: stačí zkopírovat celý adresář na jakýkoli statický hosting
 (GitHub Pages, Netlify, Cloudflare Pages…). Není potřeba build krok.
 
+## Živý režim
+
+Tlačítko **Živě** zpracovává zvuk z mikrofonu po blocích a ukazuje průběžně
+výšku, ladění, SPR, úroveň a barvu hlasu. Zpětná vazba je do ~50 ms.
+
+Omezení, která se nedají obejít (nejsou to vady aplikace):
+
+- **Prohlížeč utlumí zvuk**, když přepneš na jinou kartu nebo zhasne displej.
+  Nativní aplikace na pozadí jede dál, web ne. UI to přizná hláškou.
+- **Vyrovnanost ringu živě změřit nelze.** Na to je potřeba segmentovat tóny
+  z celé nahrávky a porovnat je mezi sebou. Živý indikátor proto ukazuje jen
+  SPR proti literatuře — a neříká z něj „má/nemá ring".
+- **iOS Safari** má pro audio vlastní pravidla a je největší zdroj překvapení.
+
+## Výkon
+
+Živý rámec (blok 20 ms, okno 2048 vzorků @48 kHz), měřeno na jednom jádře:
+
+| cesta | medián | p99 | rezerva na 20ms blok |
+|---|---|---|---|
+| čistý JS | 0,41 ms | 0,53 ms | 49× |
+| WASM | **0,13 ms** | 0,16 ms | **154×** |
+
+WASM jádro (`wasm/src/dsp.ts`, 10 kB) se používá pro živý režim. Přínos není
+jen rychlost — hlavně **nealokuje za běhu**, takže nekmitá garbage collector
+a indikátor neškube. Když se `.wasm` nepodaří načíst, živý režim spadne na JS
+a funguje dál, jen pomaleji.
+
+Kompilace: `npm run build:wasm` (potřebuje AssemblyScript; skript si ho doinstaluje).
+
 ## Testy
 
 ```bash
-node test/test-dsp.mjs        # DSP jádro na syntetických signálech (26 testů)
+npm run test:all              # všechno (10 sad)
+node test/test-dsp.mjs        # DSP jádro na syntetických signálech
 node test/test-pipeline.mjs   # celá pipeline na reálném WAV
-node test/verify.mjs audio.wav report.json   # srovnání s referenčním Python nástrojem
+node test/test-live-wiring.mjs  # živý režim: ID, importy, cache
+node test/test-live-render.mjs  # živý indikátor: skutečné pixely v Chromiu
+node test/test-smoke-browser.mjs # načte se celá aplikace včetně WASM?
+node test/verify.mjs audio.wav report.json   # srovnání s Python nástrojem
 ```
 
 `test-dsp.mjs` ověřuje jádro proti **známé pravdě**: F0 se musí trefit na 0,0 centu,
 SPR musí rozeznat tón s ringem od tónu bez, LPC musí najít zadané formanty.
+
+### Nástroje pro ověření (tools/)
+
+```bash
+node tools/parity.mjs check    # jádro dává stejná čísla jako před optimalizací
+node tools/wasm-parity.mjs     # WASM vs JS rámec po rámci
+node tools/live-check.mjs      # živé SPR == offline SPR, výška == pitchTrack
+node tools/bench.mjs           # kolik rezervy je na živou analýzu
+node tools/bench-wasm.mjs      # JS vs WASM na živém rámci
+```
+
+`parity.mjs check` je záchranná síť při zásahu do DSP: když se čísla pohnou,
+pozná se to dřív, než to uvidí uživatel. `live-check.mjs` ověřuje to podstatné —
+že živý indikátor neukazuje jiné číslo, než jaké pak vyjde z analýzy nahrávky.
 
 ## Struktura
 
@@ -79,8 +127,16 @@ icon.svg
 src/analysis.js         DSP jádro (FFT, YIN, LPC, SPR, FHE, segmentace)
 src/charts.js           vykreslování na canvas
 src/app.js              logika aplikace, historie, exporty
+src/live.js             živá zpětná vazba — čistá logika (bez DOM)
+src/live-charts.js      vykreslování živého indikátoru
+src/live-run.js         mikrofon → AudioWorklet → jádro
+src/live-ui.js          ovládání živého režimu a propojení s UI
+src/dsp-backend.js      WASM jádro + záložní JS cesta
+wasm/src/dsp.ts         WASM jádro (AssemblyScript)
+wasm/build.sh           překlad jádra
 serve.mjs               vývojový server
 test/                   testy
+tools/                  měření, parita, ověřování
 ```
 
 ## Jak to funguje uvnitř

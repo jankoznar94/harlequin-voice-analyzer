@@ -6,14 +6,20 @@
   "type": "module",
   "scripts": {
     "start": "node serve.mjs 8123",
+    "build:wasm": "bash wasm/build.sh",
     "test": "node test/test-dsp.mjs && node test/test-pipeline.mjs",
     "test:dsp": "node test/test-dsp.mjs",
     "test:pipeline": "node test/test-pipeline.mjs",
+    "test:live": "node test/test-live-wiring.mjs",
+    "test:all": "for t in dsp pipeline ui-wiring spec sw-update playhead player-wiring live-wiring live-render smoke-browser; do node test/test-$t.mjs || exit 1; done",
+    "check:parity": "node tools/parity.mjs check",
+    "check:wasm": "node tools/wasm-parity.mjs",
+    "check:live": "node tools/live-check.mjs",
     "verify": "node test/verify.mjs"
   },
   "engines": {
     "node": ">=18"
   },
-  "keywords": ["voice", "singing", "dsp", "formant", "spectrogram", "praat", "pwa"],
+  "keywords": ["voice", "singing", "dsp", "formant", "spectrogram", "praat", "pwa", "wasm"],
   "license": "MIT"
 }

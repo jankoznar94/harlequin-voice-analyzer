@@ -15,6 +15,11 @@ const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const app = fs.readFileSync(path.join(root, 'src/app.js'), 'utf8');
 const charts = fs.readFileSync(path.join(root, 'src/charts.js'), 'utf8');
 const sw = fs.readFileSync(path.join(root, 'sw.js'), 'utf8');
+// Živý režim ovládá vlastní moduly. Bez nich by test hlásil všechny prvky
+// živého indikátoru jako osiřelé, i když je live-ui.js skutečně používá.
+const liveUi = fs.readFileSync(path.join(root, 'src/live-ui.js'), 'utf8');
+const liveRun = fs.readFileSync(path.join(root, 'src/live-run.js'), 'utf8');
+const liveCharts = fs.readFileSync(path.join(root, 'src/live-charts.js'), 'utf8');
 
 let pass = 0, fail = 0;
 const check = (name, ok, detail = '') => {
@@ -25,6 +30,12 @@ const check = (name, ok, detail = '') => {
 console.log('\n═══ 1. ID použité v app.js existují v HTML ═══');
 const idsInHtml = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map(m => m[1]));
 const idsUsed = new Set([...app.matchAll(/\$\('([^']+)'\)/g)].map(m => m[1]));
+// živý režim sahá na prvky ze svých modulů
+for (const src of [liveUi, liveRun]) {
+  for (const m of src.matchAll(/\$\('([^']+)'\)/g)) idsUsed.add(m[1]);
+  for (const m of src.matchAll(/getElementById\('([^']+)'\)/g)) idsUsed.add(m[1]);
+}
+// id v cacheEls() jsou zapsaná jako  'klic: $("id")'  — regex výše je chytí taky
 const missing = [...idsUsed].filter(id => !idsInHtml.has(id));
 check(`všech ${idsUsed.size} použitých ID existuje`, missing.length === 0,
   missing.length ? 'chybí: ' + missing.join(', ') : '');
@@ -35,7 +46,8 @@ console.log('\n═══ 2. Osiřelé prvky v HTML (nikdo je nepoužívá) ═�
 const kpiDyn = new Set();
 for (const m of app.matchAll(/setKpi\('([^']+)'/g)) { kpiDyn.add(m[1]); kpiDyn.add(m[1] + '-s'); }
 const usedLoose = (id) =>
-  kpiDyn.has(id) || app.includes(id) || charts.includes(id) || sw.includes(id);
+  kpiDyn.has(id) || app.includes(id) || charts.includes(id) || sw.includes(id) ||
+  liveUi.includes(id) || liveRun.includes(id) || liveCharts.includes(id);
 const orphanReal = [...idsInHtml].filter(id => !usedLoose(id));
 check('žádné osiřelé ID', orphanReal.length === 0,
   orphanReal.length ? 'osiřelé: ' + orphanReal.join(', ') : '');

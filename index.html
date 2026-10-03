@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Hlas">
-<link rel="stylesheet" href="src/style.css?v=9">
+<link rel="stylesheet" href="src/style.css?v=10">
 </head>
 <body>
 
@@ -55,6 +55,7 @@
 
     <div class="actions">
       <button id="btn-record" class="btn primary" type="button">Nahrávat</button>
+      <button id="btn-live" class="btn" type="button">Živě</button>
       <label class="btn" for="file-input">Načíst soubor</label>
       <input id="file-input" type="file" accept="audio/*" hidden>
     </div>
@@ -76,6 +77,72 @@
         <li><strong>Vypni automatické zesílení</strong> (AGC) v nastavení telefonu.</li>
         <li><strong>Srovnávej jen sám sebe</strong>, stejným mikrofonem a ve stejné
             místnosti. Srovnávat s cizí nahrávkou nemá smysl.</li>
+      </ul>
+    </details>
+  </section>
+
+  <!-- ─────────── ŽIVĚ ─────────── -->
+  <section id="panel-live" class="panel hidden">
+    <div class="hdr-row">
+      <h2>Živě</h2>
+      <span id="live-engine" class="hint"></span>
+    </div>
+    <p class="hint">Zpívej a sleduj, co se děje. Čísla jsou orientační —
+       rozhoduje poslech. Podrobné vyhodnocení (vyrovnanost ringu mezi tóny) umí
+       jen analýza celé nahrávky.</p>
+
+    <div id="live-warn" class="warn warn-soft hidden"></div>
+
+    <div class="live-grid">
+      <div class="live-box">
+        <span class="live-lbl">Výška a ladění</span>
+        <canvas id="c-live-tune" class="chart" height="120"></canvas>
+      </div>
+      <div class="live-box">
+        <span class="live-lbl">Síla ringu (SPR)</span>
+        <canvas id="c-live-spr" class="chart" height="120"></canvas>
+        <p class="hint live-note">Není to verdikt „má/nemá ring" — jen orientace proti
+           literatuře. Rozhoduje vyrovnanost mezi tóny, a tu pozná až celá nahrávka.</p>
+      </div>
+      <div class="live-box">
+        <span class="live-lbl">Úroveň</span>
+        <canvas id="c-live-level" class="chart" height="90"></canvas>
+      </div>
+      <div class="live-box">
+        <span class="live-lbl">Barva hlasu (FHE)</span>
+        <canvas id="c-live-fhe" class="chart" height="90"></canvas>
+      </div>
+    </div>
+
+    <div class="live-nums">
+      <div class="live-num"><span class="live-k">tón</span><strong id="lv-note">—</strong></div>
+      <div class="live-num"><span class="live-k">odchylka</span><strong id="lv-cents">—</strong></div>
+      <div class="live-num"><span class="live-k">výška</span><strong id="lv-f0">—</strong></div>
+      <div class="live-num"><span class="live-k">SPR teď</span><strong id="lv-spr">—</strong></div>
+      <div class="live-num"><span class="live-k">SPR medián</span><strong id="lv-sprmed">—</strong></div>
+      <div class="live-num"><span class="live-k">FHE</span><strong id="lv-fhe">—</strong></div>
+      <div class="live-num"><span class="live-k">úroveň</span><strong id="lv-lvl">—</strong></div>
+      <div class="live-num"><span class="live-k">rozptyl ladění</span><strong id="lv-spread">—</strong></div>
+      <div class="live-num"><span class="live-k">zpíváno</span><strong id="lv-pct">—</strong></div>
+      <div class="live-num"><span class="live-k">doba</span><strong id="lv-time">0:00</strong></div>
+    </div>
+
+    <div class="actions">
+      <button id="btn-live-stop" class="btn primary" type="button">Ukončit</button>
+      <button id="btn-live-save" class="btn" type="button">Uložit do historie</button>
+    </div>
+
+    <details class="tips">
+      <summary>Jak živý režim čteš</summary>
+      <ul>
+        <li><strong>Ručička ladění</strong> — čím blíž ke středu, tím přesněji sedíš
+            v tónu. Zelená znamená do 15 centů, oranžová do 35, červená víc.</li>
+        <li><strong>Rozptyl ladění</strong> — jak moc se výška třese. Malý rozptyl =
+            stabilní tón. Roste s vibratem, a to je správně.</li>
+        <li><strong>SPR</strong> — sleduj, jak se hýbe při změně hlasitosti a
+            samohlásky. Ring jde nahoru s oporou, ne s tlačením.</li>
+        <li><strong>Prohlížeč utlumí zvuk</strong>, když přepneš na jinou kartu nebo
+            zhasne displej. Měření se v tu chvíli zastaví — není to vada aplikace.</li>
       </ul>
     </details>
   </section>
@@ -244,11 +311,12 @@
 
 <footer class="ftr">
   <p>Vše počítáno lokálně. Žádný server, žádné nahrávání na cizí stroj.</p>
+  <p class="ftr-ver">Verze aplikace: <strong id="app-ver">—</strong></p>
   <p><button id="btn-clear" class="link" type="button">Smazat všechna uložená data</button></p>
 </footer>
 
 <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
-<script type="module" src="src/app.js?v=9"></script>
+<script type="module" src="src/app.js?v=10"></script>
 </body>
 </html>
