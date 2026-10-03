@@ -16,6 +16,11 @@
  *   Správně se dekóduje přes `OfflineAudioContext`, který na hardware vázaný
  *   není a vrátil vždy 48 kHz.
  *
+ * ⚠️ ALE POZOR — `OfflineAudioContext` přinese jinou past (řeší sekce 6):
+ * vrátí 48 kHz VŽDY, i když soubor měl 16 kHz. Tím se ztratí informace
+ * o skutečné šířce pásma nahrávky. Proto se původní kmitočet čte zvlášť
+ * z hlavičky souboru (`src/sample-rate.js`).
+ *
  * Test hlídá DVĚ věci, protože samotné „použil Offline" nestačí:
  *   1) že se skutečně dekóduje přes OfflineAudioContext (ne přes AudioContext),
  *   2) že z toho vyjde POUŽITELNÉ pásmo — tedy že hláška „Ring nelze měřit"
@@ -115,6 +120,52 @@ check('výsledek se vyplnil (nezůstalo na „Hotovo")', /\d+ tón/.test(env.el(
     `použité cesty: ${env2.used.join(', ') || '(žádná)'}`);
   check('a výsledek se i tak vyplní', /\d+ tón/.test(env2.el('r-meta').textContent),
     env2.el('r-meta').textContent || '(prázdné)');
+}
+
+/* ── 6. PŮVODNÍ kmitočet souboru se musí přečíst z hlavičky ─────────────
+ *
+ * PROČ (reálná chyba, naměřeno): `OfflineAudioContext` vrátí po dekódování
+ * VŽDY 48 kHz, i když soubor měl 16 kHz. Analýza tím ztratila informaci
+ * o skutečné šířce pásma nahrávky a hláška „Ring nelze měřit — nízký
+ * vzorkovací kmitočet" se NIKDY nespustila — propadla vždy na radu
+ * „nahraj WAV", která u záznamníku na 16 kHz nemůže pomoct.
+ *
+ * Test jede SKUTEČNOU cestu app.js (soubor → dekódování → analýza) a čte,
+ * jaký kmitočet se dostal do analýzy. Kontrola, že test umí selhat: hlavička
+ * 8kHz WAV se musí poznat jako 8000, ne jako 48000 od dekódování.
+ */
+{
+  const env3 = installAppEnv({ audioSampleRate: 44100, offlineSampleRate: 48000 });
+
+  // skutečná hlavička RIFF/WAVE s 8kHz vzorkováním
+  const wav = (() => {
+    const n = 8000 * 3, bytes = n * 2, b = new ArrayBuffer(44 + bytes);
+    const dv = new DataView(b), put = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+    put(0, 'RIFF'); dv.setUint32(4, 36 + bytes, true); put(8, 'WAVEfmt ');
+    dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+    dv.setUint32(24, 8000, true);                    // ← kmitočet souboru
+    dv.setUint32(28, 16000, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+    put(36, 'data'); dv.setUint32(40, bytes, true);
+    for (let i = 0; i < n; i++) dv.setInt16(44 + i * 2, Math.round(12000 * Math.sin(2 * Math.PI * 220 * i / 8000)), true);
+    return new Uint8Array(b);
+  })();
+
+  await import('file://' + APP + '?t3=' + Date.now());
+  await sleep(30);
+  const B3 = new Blob([wav], { type: 'audio/wav' });
+  B3.name = 'zaznamnik.wav';
+  env3.el('file-input').onchange({ target: { files: [B3], value: 'z' } });
+  for (let i = 0; i < 150 && !env3.el('r-meta').textContent && !env3.el('r-unusable').innerHTML; i++) {
+    await sleep(100);
+  }
+  await sleep(120);
+
+  const unus3 = (env3.el('r-unusable').innerHTML || '').replace(/<[^>]*>/g, ' ');
+  check('8kHz soubor → hláška pojmenuje VZORKOVACÍ KMITOČET, ne kompresi',
+    /vzorkovací kmitočet/i.test(unus3) && !/kompres/i.test(unus3),
+    unus3 ? unus3.replace(/\s+/g, ' ').slice(0, 110) : '(nehlášeno)');
+  check('8kHz soubor → hláška neposílá hledat datový tok / WAV',
+    !/datovém toku/i.test(unus3), unus3.replace(/\s+/g, ' ').slice(0, 90) || '(nehlášeno)');
 }
 
 console.log(`\n${fail.n === 0 ? '✓' : '✗'} DEKÓDOVÁNÍ: ${pass.n} prošlo, ${fail.n} selhalo\n`);

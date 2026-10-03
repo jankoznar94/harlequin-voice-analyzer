@@ -485,6 +485,55 @@ console.log('\n═══ 14. Ring nelze změřit: správně pojmenovaná příč
     `${(rTon.peak_dbfs - rTicho.peak_dbfs).toFixed(1)} dB`);
 }
 
+console.log('\n═══ 15. Nízký vzorkovací kmitočet nahrávky (regrese) ═══');
+{
+  /* REÁLNÁ CHYBA (naměřeno, opraveno): dekódování přes OfflineAudioContext
+   * vrátí VŽDY 48 kHz, i když soubor měl 16 kHz. Analýza tedy nemohla poznat,
+   * že pásmo 2–4 kHz je useknuté nízkým kmitočtem NAHRÁVKY, a hláška
+   * „Ring nelze měřit — nízký vzorkovací kmitočet" se NIKDY nespustila
+   * (podmínka `band.limit > 0,75·(sr/2)` se sr = 48000 nemůže vyjít).
+   * Propadlo se vždy na radu „nahraj WAV", která u záznamníku na 16 kHz
+   * nemůže pomoct. Test hlídá, že se kmitočet souboru předává DÁL.
+   */
+  const sr = 44100, dur = 12;
+  const x = new Float64Array(sr * dur);
+  for (let i = 0; i < x.length; i++) {
+    const t = i / sr;
+    x[i] = 0.4 * Math.sin(2 * Math.PI * 220 * t) +
+      0.12 * Math.sin(2 * Math.PI * 440 * t) + 0.08 * Math.sin(2 * Math.PI * 880 * t) +
+      0.05 * Math.sin(2 * Math.PI * 2640 * t) + 0.04 * Math.sin(2 * Math.PI * 3520 * t);
+  }
+
+  // soubor z 8kHz záznamníku: Nyquist 4 kHz → ring měřit nelze a MUSÍ to říct
+  const r8 = analyze(x, sr, { fach: 'tenor', fileRate: 8000 });
+  check('8 kHz soubor → spr_unusable', r8.summary.spr_unusable === true,
+    `unusable ${!!r8.summary.spr_unusable}`);
+  check('8 kHz soubor → příčina je označená jako nízký kmitočet',
+    r8.summary.low_rate === true, `low_rate=${r8.summary.low_rate}`);
+  check('8 kHz soubor → v summary je PŮVODNÍ kmitočet, ne dekódovaný',
+    r8.summary.file_rate === 8000, `file_rate=${r8.summary.file_rate}`);
+  check('8 kHz soubor → hláška pojmenuje kmitočet, ne kompresi',
+    /vzorkovací kmitočet/.test(r8.band.reason) && !/kompres/.test(r8.band.reason),
+    `reason="${r8.band.reason}"`);
+
+  // 16 kHz: Nyquist 8 kHz → pásmo 2–4 kHz JE měřitelné (naměřeno SPR do 2 dB)
+  const r16 = analyze(x, sr, { fach: 'tenor', fileRate: 16000 });
+  check('16 kHz soubor → ring měřit LZE (naivní mez by ho vyřadila)',
+    r16.summary.spr_unusable !== true,
+    `unusable ${!!r16.summary.spr_unusable}, mez ${Math.round(r16.band.limit)} Hz`);
+
+  // 48 kHz: beze změny
+  const r48 = analyze(x, sr, { fach: 'tenor', fileRate: 48000 });
+  check('48 kHz soubor → ring měřit lze', r48.summary.spr_unusable !== true,
+    `unusable ${!!r48.summary.spr_unusable}`);
+
+  // neznámý kmitočet (nepoznaná hlavička) → stará přísná cesta, nikdy nepustí ořez
+  const rNaN = analyze(x, sr, { fach: 'tenor' });
+  check('bez znalosti kmitočtu se chová jako dřív (nic se nerozbije)',
+    typeof rNaN.summary.spr_unusable === 'boolean',
+    `unusable ${!!rNaN.summary.spr_unusable}`);
+}
+
 console.log(`\n═══ VÝSLEDEK: ${pass} prošlo, ${fail} selhalo ═══`);
 const failed = results.filter(r => !r.ok);
 if (failed.length) {

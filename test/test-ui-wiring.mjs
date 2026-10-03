@@ -151,6 +151,62 @@ const badChart = fromCharts.filter(e => e && !chartExports.has(e));
 check(`app.js importuje ${fromCharts.length} věcí z charts.js`, badChart.length === 0,
   badChart.length ? 'neexportuje se: ' + badChart.join(', ') : '');
 
+console.log('\n═══ 9. Výběr souboru: accept nesmí poslat Android do záznamníku ═══');
+{
+  /* PROČ (reálná chyba u uživatele): Android mapuje `accept="audio/*"` na
+   * systémovou akci „zaznamenej zvuk". Klepnutí na „Načíst soubor" pak
+   * otevře aplikaci ZÁZNAMNÍKU v režimu nahrávání, kde se seznam nahrávek
+   * jen přehraje — vybrat a vrátit se z něj nedá. Uživatel nemá jak dostat
+   * existující nahrávku do aplikace.
+   *
+   * Test hlídá, že tam `accept` není zpátky. Kdyby ho někdo „opravil" zpět
+   * (vypadá to jako ztráta funkce), tlačítko na Androidu přestane fungovat.
+   */
+  const m = html.match(/<input[^>]*id="file-input"[^>]*>/);
+  const tag = m ? m[0] : '';
+  check('file-input existuje', !!m, tag || '(nenalezen)');
+  check('file-input NEMÁ accept (jinak ho Android pošle do záznamníku)',
+    !!m && !/\baccept=/.test(tag), tag);
+  check('file-input zůstává typu file', /type="file"/.test(tag), tag);
+  // a tlačítko na něj musí pořád ukazovat
+  check('label „Načíst soubor" ukazuje na file-input',
+    /for="file-input"/.test(html), '');
+}
+
+console.log('\n═══ 10. Každý modul, který app.js importuje, je v service workeru ═══');
+{
+  /* Past, která se snadno stane: nový modul se přidá do app.js, ale ne do
+   * ASSETS v sw.js. V prohlížeči to funguje (síť ho stáhne), ale OFFLINE
+   * režim spadne na chybějícím modulu — a to se pozná až na telefonu bez
+   * signálu. Proto se to hlídá staticky.
+   */
+  const swAssets = new Set([...sw.matchAll(/'(\.\/[^']+)'/g)].map(m => m[1].replace(/^\.\//, '')));
+  const ownModules = [];
+  for (const file of ['src/app.js', 'src/charts.js', 'src/analysis.js', 'src/live-ui.js',
+                      'src/live-run.js', 'src/live-charts.js', 'src/live.js', 'src/dsp-backend.js',
+                      'src/sample-rate.js']) {
+    if (!fs.existsSync(path.join(root, file))) continue;
+    const src = fs.readFileSync(path.join(root, file), 'utf8');
+    for (const m of src.matchAll(/from\s+'\.\/([^']+)'/g)) ownModules.push(m[1]);
+  }
+  const missingAssets = [...new Set(ownModules)].filter(m => !swAssets.has('src/' + m) && !swAssets.has(m));
+  check(`všech ${new Set(ownModules).size} vlastních modulů je v ASSETS`, missingAssets.length === 0,
+    missingAssets.length ? 'chybí v sw.js: ' + missingAssets.join(', ') : '');
+
+  // a zpátky: co je v ASSETS, musí na disku existovat
+  const missingFiles = [...swAssets].filter(a => a && !fs.existsSync(path.join(root, a)));
+  check('všechny ASSETS na disku existují', missingFiles.length === 0,
+    missingFiles.length ? 'chybí na disku: ' + missingFiles.join(', ') : '');
+
+  // verze cache musí odpovídat ?v= v index.html
+  const cacheV = (sw.match(/CACHE\s*=\s*'vocal-lab-v(\d+)'/) || [])[1];
+  const htmlV = (html.match(/app\.js\?v=(\d+)/) || [])[1];
+  const appV = (sw.match(/APP_VERSION\s*=\s*'([^']+)'/) || [])[1];
+  check('CACHE, ?v= a APP_VERSION drží spolu',
+    cacheV === htmlV && appV === '1.0.' + cacheV,
+    `CACHE v${cacheV}, index v${htmlV}, APP_VERSION ${appV}`);
+}
+
 console.log(`\n═══ ${pass} prošlo, ${fail} selhalo ═══`);
 if (fail) console.log('\nUI by v prohlížeči hlásilo chyby.');
 process.exitCode = fail ? 1 : 0;
