@@ -167,18 +167,62 @@ export function bandwidthLimit(spec, dropDb = 40) {
   return last;
 }
 
-/** Je nahrávka vůbec schopna měřit SPR? (úseknuté pásmo = nesmysl) */
+/**
+ * Obálka spektra: medián přes okno ÚMĚRNÉ KMITOČTU.
+ *
+ * PROČ TO JE (reálná chyba, naměřeno): `bandwidthLimit` se ptá správně
+ * („kde končí pásmo nahrávky"), ale na SUROVÉM spektru na to odpovídá špatně.
+ * Špička úzkého tónu je o desítky dB výš než obálka hlasu — držený doprovodný
+ * tón 880 Hz na −18 dBFS zvedne vrchol tak, že se všech 40 dB spotřebuje na
+ * cestu od něj dolů k obálce hlasu. Nahrávka s plným pásmem do 6 kHz pak vyjde
+ * jako „pásmo useknuto na 3855 Hz" a SPR se odmítne měřit.
+ *
+ * Medián přes okno ±1 % kmitočtu úzkou špičku odstraní (v okně je přes ni
+ * pořád většina ostatních bodů) a šířky pásma se nedotkne (pásmo se mění
+ * pomalu). Okno se počítá z kmitočtu, ne z počtu binů — jinak by na nízkých
+ * kmitočtech bylo širší v Hz a smazalo i pásmo.
+ */
+export function spectralEnvelope(spec, frac = 0.01) {
+  const { freq, db, binHz } = spec;
+  const out = new Float64Array(db.length);
+  const w = [];
+  for (let i = 0; i < db.length; i++) {
+    const f = freq[i];
+    if (f < 150) { out[i] = db[i]; continue; }
+    const half = Math.max(2, Math.round(frac * f / (binHz || 1)));
+    w.length = 0;
+    for (let j = Math.max(0, i - half); j <= Math.min(db.length - 1, i + half); j++) w.push(db[j]);
+    w.sort((a, b) => a - b);
+    out[i] = w[w.length >> 1];
+  }
+  return { freq, db: out, binHz };
+}
+
+/**
+ * Je nahrávka vůbec schopna měřit SPR? (úseknuté pásmo = nesmysl)
+ *
+ * Pásmo se měří na OBÁLCE spektra, ne na surovém — viz `spectralEnvelope`.
+ * Do výsledku jde `limit_raw` (co by vyšlo ze surového spektra), aby se dalo
+ * rozlišit „skutečně useknutý zdroj" od „nízkofrekvenční tón přebíjí hlas".
+ */
 export function sprValid(spec, minHz = 4100) {
-  const lim = bandwidthLimit(spec);
-  if (isNaN(lim)) return { valid: false, reason: 'spektrum nelze vyhodnotit', limit: NaN };
-  if (lim < minHz) {
+  const raw = bandwidthLimit(spec);
+  if (isNaN(raw)) return { valid: false, reason: 'spektrum nelze vyhodnotit', limit: NaN, limit_raw: NaN };
+  const lim = bandwidthLimit(spectralEnvelope(spec));
+  /* Bereme BLOVĚTVÍ hodnotu (širší z obou), protože každé měření má jiný slepý úhel:
+   *  - syrové spektrum nepozná, že vrchol je jen úzký tón doprovodu, a hlásí ořez;
+   *  - obálka na nízkém vzorkovacím kmitočtu (málo binů na oktávu) podhodnotí mez.
+   *  Ořezaný zdroj propadne v OBOU (naměřeno: brick-wall 3,4 kHz → 3516 i 3703 Hz). */
+  const limit = Math.max(raw, lim);
+  if (limit < minHz) {
     return {
       valid: false,
-      reason: `pásmo useknuto na ~${Math.round(lim)} Hz (potřeba aspoň ${minHz} Hz) - SPR nelze měřit`,
-      limit: lim,
+      reason: `pásmo useknuto na ~${Math.round(limit)} Hz (potřeba aspoň ${minHz} Hz) - SPR nelze měřit`,
+      limit,
+      limit_raw: raw,
     };
   }
-  return { valid: true, reason: 'ok', limit: lim };
+  return { valid: true, reason: 'ok', limit, limit_raw: raw };
 }
 
 /* --------------------------------------------------------------- F0 (YIN) -- */
