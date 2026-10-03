@@ -220,11 +220,7 @@ function showResult(res, samples, sampleRate, label, secs) {
 
   if (s.spr_unusable) {
     $('r-unusable').classList.remove('hidden');
-    $('r-unusable').innerHTML =
-      `<strong>Ring nelze změřit.</strong><br>${escapeHtml(s.reason)}<br><br>` +
-      'Nahrávka nemá dostatečné pásmo pro oblast 2–4 kHz. Typicky jde o silně ' +
-      'komprimovaný zvuk (m4a, opus, telefonní záznam) nebo historickou nahrávku. ' +
-      'Zkus nahrát znovu, ideálně jako WAV.';
+    $('r-unusable').innerHTML = unusableText(res);
     $('r-body').classList.add('hidden');
     return;
   }
@@ -400,6 +396,37 @@ function verdict(res) {
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+/**
+ * Proč nelze změřit ring — konkrétně podle příčiny.
+ *
+ * PŮVODNÍ CHYBA: hláška vždy tvrdila „nahrávka nemá dostatečné pásmo pro oblast
+ * 2–4 kHz, zkus WAV". Jenže `spr_unusable` vzniká i tehdy, když analýza nenajde
+ * ANI JEDEN TÓN (ticho, moc tichý záznam). Uživatel pak hledal vadu ve formátu,
+ * která tam není — a rada „nahraj to jako WAV" nemohla nikdy pomoct.
+ */
+function unusableText(res) {
+  const s = res.summary;
+  const peak = res.peak_dbfs;
+  const quiet = peak === peak && peak < -30;         // špička pod −30 dBFS = ticho
+
+  if (s.n_notes_total === 0 && quiet) {
+    return '<strong>Nahrávka je ticho.</strong><br>' +
+      `Špička nahrávky je ${fmt(peak, 0)} dBFS — hluboko pod úrovní, ze které jde měřit hlas. ` +
+      'Zkontroluj, že mikrofon opravdu snímá (indikátor úrovně při nahrávání se musí hýbat), ' +
+      'že není ztlumený systémový vstup a že máš vybrané správné vstupní zařízení.';
+  }
+  if (s.n_notes_total === 0) {
+    return '<strong>V nahrávce nejsou žádné zpívané tóny.</strong><br>' +
+      `Špička je ${fmt(peak, 0)} dBFS, takže zvuk tam je — ale analýza v něm nenašla ` +
+      'udržené tóny hlasu. Bývá to řeč, šum, doprovod bez zpěvu, nebo nahrávka kratší než ~2 s. ' +
+      'Nahraj souvislý zpívaný tón nebo frázi.';
+  }
+  return '<strong>Ring nelze změřit.</strong><br>' + escapeHtml(s.reason) + '<br><br>' +
+    'Rozsah 2–4 kHz, kde se ring měří, je v této nahrávce potlačený. To dělá ' +
+    'silná komprese (nízký datový tok), telefonní přenos nebo historický záznam. ' +
+    'Nahrávej WAV nebo ve vysokém datovém toku.';
 }
 
 /* ═══════════════════════════════════════ historie */

@@ -860,9 +860,19 @@ export function analyze(samples, sampleRate, opts = {}) {
   const summary = ringAnalysis(notes);
   progress(1.0, 'Hotovo');
 
+  // špička nahrávky — nutná k rozlišení „ticho" od „nemá pásmo".
+  // Bez ní UI vždy tvrdilo, že chybí pásmo 2–4 kHz, i když byla nahrávka ticho.
+  let pk = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const a = Math.abs(samples[i]);
+    if (a > pk) pk = a;
+  }
+  const peakDbfs = 20 * Math.log10(pk + 1e-12);
+
   return {
     duration_s: duration, sample_rate: sampleRate, fach,
     n_notes: notes.length, n_dropped: dropped.length,
+    peak_dbfs: peakDbfs,           // špička nahrávky (dBFS)
     band,                          // šířka pásma nahrávky (měřeno jednou)
     notes, summary, refs: REFS,
   };

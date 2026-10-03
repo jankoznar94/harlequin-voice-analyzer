@@ -450,6 +450,41 @@ console.log('\n═══ 13. Krátké a tiché tóny se nehodnotí (regrese) ═
     `vyřazeno ${r4.n_notes_excluded}, výpadků ${r4.dropouts.length}`);
 }
 
+console.log('\n═══ 14. Ring nelze změřit: správně pojmenovaná příčina (regrese) ═══');
+{
+  // REÁLNÁ CHYBA, která se dostala k uživateli: hláška vždy tvrdila „nemá
+  // dostatečné pásmo pro 2–4 kHz, nahraj WAV" — i když analýza nenašla ANI
+  // JEDEN TÓN (ticho). Uživatel pak hledal vadu ve formátu, která tam není.
+  // Analýza proto musí hlásit ŠPIČKU nahrávky, aby UI umělo ticho odlišit.
+  const sr = 44100, dur = 12;
+  const ticho = new Float64Array(sr * dur);                       // dokonalé ticho
+  const rTicho = analyze(ticho, sr, { fach: 'tenor' });
+  check('ticho → 0 tónů a spr_unusable', rTicho.notes.length === 0 && rTicho.summary.spr_unusable === true,
+    `tónů ${rTicho.notes.length}, unusable ${!!rTicho.summary.spr_unusable}`);
+  check('ticho → analysis vrací peak_dbfs', rTicho.peak_dbfs === rTicho.peak_dbfs,
+    `peak_dbfs=${rTicho.peak_dbfs}`);
+  check('ticho → špička je hluboko pod −30 dBFS', rTicho.peak_dbfs < -30,
+    `${rTicho.peak_dbfs.toFixed(1)} dBFS`);
+
+  // a naopak: tón, který tam JE, musí dát platnou špičku i tóny
+  const s = new Float64Array(sr * dur);
+  for (let i = 0; i < s.length; i++) {
+    const t = i / sr;
+    s[i] = 0.4 * Math.sin(2 * Math.PI * 220 * t) +
+      0.12 * Math.sin(2 * Math.PI * 440 * t) + 0.08 * Math.sin(2 * Math.PI * 880 * t) +
+      0.05 * Math.sin(2 * Math.PI * 2640 * t) + 0.04 * Math.sin(2 * Math.PI * 3520 * t);
+  }
+  const rTon = analyze(s, sr, { fach: 'tenor' });
+  check('zpívaný tón → nenulová špička', rTon.peak_dbfs > -20 && rTon.peak_dbfs < 0,
+    `${rTon.peak_dbfs.toFixed(1)} dBFS`);
+  check('zpívaný tón → tóny nalezeny', rTon.notes.length > 0,
+    `${rTon.notes.length} tónů`);
+
+  // rozlišení: ticho vs tón se musí lišit aspoň o 30 dB
+  check('ticho a tón se liší aspoň o 30 dB', rTon.peak_dbfs - rTicho.peak_dbfs > 30,
+    `${(rTon.peak_dbfs - rTicho.peak_dbfs).toFixed(1)} dB`);
+}
+
 console.log(`\n═══ VÝSLEDEK: ${pass} prošlo, ${fail} selhalo ═══`);
 const failed = results.filter(r => !r.ok);
 if (failed.length) {
