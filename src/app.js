@@ -5,7 +5,9 @@
 import { analyze, REFS, czPlural, vyhodnotFhe, fheLabel } from './analysis.js';
 import {
   drawSpr, drawF1, drawSpec, drawTrend, fmt,
-  sprGeom, drawSpecHead, drawSprHead, clearHead, SPR_H, SPEC_H, sprNeededWidth,
+  sprGeom, specGeom, f1Geom, f1Notes,
+  drawSpecHead, drawSprHead, drawF1Head, clearHead,
+  SPR_H, SPEC_H, F1_H, sprNeededWidth,
 } from './charts.js';
 import { initLive } from './live-ui.js';
 import { sniffSampleRate } from './sample-rate.js';
@@ -189,20 +191,37 @@ async function decodeViaElement(blob) {
 
 function runAnalysis(samples, sampleRate, label, blob, fileRate = NaN) {
   cancelled = false;
+  /* Přehrávač potřebuje PŮVODNÍ blob — a to i tehdy, když analýzu spočítá
+   * Worker (blob se proto posílá tam a vrací se zpět s výsledkem). Kdyby se
+   * cesta zkazila, `validBlob` je null a přehrávač se prostě nezapne; dřív tu
+   * stálo `buffer: blob` s nedefinovaným `blob` a skript spadl na ReferenceError
+   * až PO analýze, takže UI zůstalo viset na „Hotovo" bez výsledku. */
+  const validBlob = (blob && typeof blob.slice === 'function' && blob.size > 0) ? blob : null;
   const fach = $('fach').value;
   showProgress(0.05, 'Spouštím analýzu…', 0);
 
   const t0 = performance.now();
-  const done = (res) => {
+  const showResultSafe = (res, secs) => {
+    try { showResult(res, samples, sampleRate, label, secs); }
+    catch (e) { console.error('vykreslení výsledku selhalo', e); }
+  };
+
+  const done = (res, wBlob = null) => {
     if (cancelled) return;
     const secs = (performance.now() - t0) / 1000;
     console.log(`[i] analýza ${samples.length / sampleRate | 0} s audia za ${secs.toFixed(1)} s`);
+    // Přehrávač potřebuje PŮVODNÍ blob (zvuk musí být přesně to, co se
+    // analyzovalo). Když se blob nepodařilo poslat workerem, radši přehrávač
+    // vůbec nezapínáme — dřív by tu spadlo `blob is not defined`.
+    const buf = (wBlob && typeof wBlob.slice === 'function' && wBlob.size > 0)
+      ? wBlob : validBlob;
     current = {
-      result: res, samples, sampleRate, label, date: new Date().toISOString(),
-      buffer: blob,               // originál — přehrávač si ho přehraje, ne dekódované vzorky
-      url: URL.createObjectURL(blob),
+      result: res, samples,
+      sampleRate, label, date: new Date().toISOString(),
+      buffer: buf,
+      url: buf ? URL.createObjectURL(buf) : null,
     };
-    showResult(res, samples, sampleRate, label, secs);
+    showResultSafe(res, secs);
   };
   const failed = (msg) => {
     alert('Analýza selhala: ' + msg);
@@ -252,7 +271,7 @@ function runAnalysis(samples, sampleRate, label, blob, fileRate = NaN) {
     worker.terminate();
     worker = null;
     if (m.type === 'error') { failed(m.message); return; }
-    done(m.res);
+    done(m.res, m.blob || validBlob);
   };
   worker.onerror = (ev) => {
     console.warn('[i] Worker selhal, analyzuji v hlavním vlákně', ev.message);
@@ -267,7 +286,10 @@ function runAnalysis(samples, sampleRate, label, blob, fileRate = NaN) {
   };
 
   const copy = Float64Array.from(samples);          // vzorky jdou do workeru
-  worker.postMessage({ samples: copy, sampleRate, opts: { fach, fileRate } }, [copy.buffer]);
+  worker.postMessage({
+    samples: copy, sampleRate, blob,
+    opts: { fach, fileRate },
+  }, [copy.buffer]);
 }
 
 /* ═══════════════════════════════════════ UI: průběh */
@@ -354,8 +376,12 @@ function hideProgress() {
 
 /* ═══════════════════════════════════════ UI: výsledek */
 
-function showResult(res, samples, sampleRate, label, secs) {
+function showResult(res, samples, sampleRate, label, secs, blob) {
   hideProgress();
+  // Graf ladění i spektrogram si při novém měření potřebují přepočítat plátno
+  // (předchozí nahrávka mohla být delší) — viz layoutAll.
+  lastChartLayout = '';
+  lastPane = '';
   $('panel-result').classList.remove('hidden');
   $('r-title').textContent = label;
   const dur = res.duration_s;
@@ -449,14 +475,15 @@ function showResult(res, samples, sampleRate, label, secs) {
     dw.classList.add('hidden');
   }
 
-  // grafy — drawSpr vrací geometrii, kterou používá klik do grafu i přehrávač
+  // grafy — rozměření i kresba jde jedním místem (layoutCharts), aby se
+  // skrytá plátna nevykreslovala do nulové šířky
   requestAnimationFrame(() => {
-    sprGeomRef = drawSpr($('c-spr'), res.notes, s, null, sprDrawOpts());
-    drawF1($('c-f1'), res.notes, $('hint-f1'));
-    // spektrogram se kreslí až po přesunu pod graf ringu (viz layout níž)
-    drawSpec($('c-spec'), samples, sampleRate, res.notes);
-    setupPlayer();
-    updatePlayheadUI();
+    layoutCharts(true);
+    // Zobrazení je hotové, teprve teď má smysl rozdělit práci a nechat
+    // prohlížeč překreslit: analýza ve workeru jinak nechá výsledek stát
+    // až do úplného konce (na dlouhé nahrávce i desítky sekund).
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(() => setupPlayer(), { timeout: 1500 });
+    else setTimeout(() => setupPlayer(), 50);
   });
 
   // tabulka
@@ -736,6 +763,107 @@ function renderHist() {
 
 let sprGeomRef = null;     // geometrie grafu ringu (z drawSpr) — pro klik a ukazatel
 let lastHeadT = -1;        // poslední vykreslený čas, ať se nekreslí pořád totéž
+let lastPane = '';         // která záložka je vidět (měření a kresba se přes ni ladí)
+let lastChartLayout = '';  // '' = vynutit překreslení; jinak `width|dpr|pane`
+
+/* ── záložky grafů ──────────────────────────────────────────────────────────
+ * Grafy bývaly pod sebou (ring, spektrogram, ladění) a uživatel mezi nimi musel
+ * vertikálně posouvat — a posouváním se mu ztratil přehrávač i ukazatel času.
+ * Teď je nahoře přepínač a vidět je vždy JEDEN graf; přehrávač zůstává na místě.
+ *
+ * Přepínat se dá i za přehrávání: rAF smyčka jede dál, ukazatel se kreslí od
+ * začátku (viz paintHeads/CHART_HEADS) a čas se bere z přehrávače, takže po
+ * přepnutí čára stojí tam, kde má — nic se neresetuje.
+ */
+const CHART_TABS = ['spr', 'spec', 'f1'];
+
+function activePane() {
+  const shown = CHART_TABS.find(c => !$('pane-' + c)?.classList.contains('hidden'));
+  return shown || (lastPane || 'spr');
+}
+
+function selectChart(which) {
+  if (!CHART_TABS.includes(which)) return;
+  lastPane = which;
+  for (const c of CHART_TABS) {
+    const pane = $('pane-' + c), tab = $('tab-' + c);
+    if (pane) pane.classList.toggle('hidden', c !== which);
+    if (tab) tab.setAttribute('aria-selected', c === which ? 'true' : 'false');
+  }
+  // Plátno, které je celou dobu skryté, nemá `clientWidth` — graf by se vykreslil
+  // do šířky 0 a po přepnutí by zůstal prázdný. Proto se kreslí až tady.
+  layoutCharts(true);
+  /* Ukazatel se musí dokreslit do nově viditelného grafu. Když se čas mezitím
+   * nezměnil, `lastHeadT` by kresbu přeskočilo — ale plátno je vyčištěné
+   * překreslením grafu, takže by čára po přepnutí zmizela. Vynutit. */
+  paintHeads(player?.el?.currentTime || 0, true);
+}
+
+/** Klik na záložku. Posluchače navěsit před prvním kreslením grafu. */
+function bindChartTabs() {
+  for (const c of CHART_TABS) {
+    const tab = $('tab-' + c);
+    if (tab) tab.onclick = () => selectChart(c);
+  }
+}
+
+/* ── kresba grafů ──────────────────────────────────────────────────────────
+ * Kreslit se smí jen viditelné plátno. Tři pasti, které to jinak tiše rozbije:
+ *  1. **Skryté plátno nemá `clientWidth`.** Spektrogram se kreslí z bufferu
+ *     o šířce plotW zjištěné z layoutu — na skrytém plátně vyjde šířka 0 a graf
+ *     je prázdný, i když je zdroj dat správný.
+ *  2. **Změna šířky/DIP vyžaduje překreslení.** Buffer se nastavuje podle
+ *     `devicePixelRatio`; když se změní (přechod na jiný displej), starý buffer
+ *     má špatnou velikost. Spektrogram se proto sám obnoví (jeho buffer si
+ *     drží obraz), graf ringu stačí překreslit.
+ *  3. **Uložený posun (`sprScroll.offX`) ukazuje do prázdna.** Po opětovném
+ *     zapnutí posuvu na krátké nahrávce by zůstal nenulový a čára i sloupce by
+ *     jely mimo. Resetuje se, když se posuv vypne.
+ */
+
+/** Vykreslí graf ringu s respektem k uloženému posuvu. */
+function sprDrawGeom() {
+  sprGeomRef = drawSpr($('c-spr'), current.result.notes, current.result.summary, null, sprDrawOpts());
+  return sprGeomRef;
+}
+
+function drawSpecPane() {
+  if (!current) return;
+  const pane = $('pane-spec');
+  if (pane && pane.classList.contains('hidden')) return;   // na skrytém plátně nemá cenu kreslit
+  drawSpec($('c-spec'), current.samples, current.sampleRate, current.result.notes);
+}
+
+/** Rozměří a překreslí graf té záložky, která je vidět. */
+function layoutCharts(force = false) {
+  if (!current) return;
+  const which = activePane();
+  lastPane = which;
+  const cv = $(which === 'spr' ? 'c-spr' : which === 'spec' ? 'c-spec' : 'c-f1');
+  const dpr = window.devicePixelRatio || 1;
+  const key = `${Math.round(cv?.clientWidth || 0)}|${dpr}|${which}`;
+  if (!force && key === lastChartLayout) return;
+  lastChartLayout = key;
+
+  if (which === 'spr') layoutSpr();
+  else if (which === 'spec') drawSpecPane();
+  else drawF1($('c-f1'), current.result.notes, $('hint-f1'));
+}
+
+/** Když se plátno rozměří jinak (jiný displej, otočení, jiná šířka okna),
+ *  musí se graf překreslit — buffer má jinou velikost. Spektrogram se navíc
+ *  musí vykreslit CELÝ znovu, ne jen jinak rozměřit: jeho obraz je zapsaný
+ *  v bufferu, který se nastavením `canvas.width` smaže. */
+function watchChartLayout() {
+  if (typeof ResizeObserver === 'function') {
+    const ro = new ResizeObserver(() => layoutCharts(false));
+    for (const c of CHART_TABS) {
+      const el = $(c === 'spr' ? 'c-spr' : c === 'spec' ? 'c-spec' : 'c-f1');
+      if (el) ro.observe(el);
+    }
+  }
+  window.addEventListener('resize', () => layoutCharts(false));
+}
 
 /**
  * Posuvné plátno grafu ringu.
@@ -762,7 +890,10 @@ function layoutSpr() {
   const avail = chart.parentElement?.clientWidth || chart.clientWidth || 600;
   const need = sprNeededWidth(avail, current.result.notes, current.result.duration_s);
   sprScroll.width = need;
-  if (!need) sprScroll.offX = 0;
+  /* Když se posuv vypne (kratší nahrávka než minule), uložený posun ukazuje do
+   * prázdna — sloupce i čára by jely mimo, protože geometrie by odečítala
+   * scrollLeft, který už neexistuje. Proto se při vypnutí posuvu vynuluje. */
+  if (!need) { sprScroll.offX = 0; const w = chart.parentElement; if (w && w.scrollLeft) w.scrollLeft = 0; }
   chart.style.width = need ? need + 'px' : '';
   if (head) head.style.width = need ? need + 'px' : '';
   const wrap = chart.parentElement;
@@ -770,18 +901,19 @@ function layoutSpr() {
     wrap.classList.toggle('scrollable', !!need);
     // ukazatel se drží ve viditelném okně, aby nebyl mimo obrazovku
     if (need) {
-      const g = sprGeomRef || { pxAtTimeTime: null };
+      const g = sprGeomRef;
       const t = player?.el?.currentTime || 0;
       if (g && typeof g.pxAtTime === 'function') {
         const x = g.pxAtTime(t);
         const view = wrap.scrollLeft;
         if (x < view + 60 || x > view + wrap.clientWidth - 60) {
           wrap.scrollLeft = Math.max(0, x - wrap.clientWidth / 2);
+          sprScroll.offX = wrap.scrollLeft;
         }
       }
     }
   }
-  sprGeomRef = drawSpr(chart, current.result.notes, current.result.summary, null, sprDrawOpts());
+  sprDrawGeom();
   paintHeads(player?.el?.currentTime || 0, true);
 }
 
@@ -790,7 +922,7 @@ function onSprScroll() {
   if (!wrap) return;
   sprScroll.offX = wrap.scrollLeft;
   if (!current) return;
-  sprGeomRef = drawSpr($('c-spr'), current.result.notes, current.result.summary, null, sprDrawOpts());
+  sprDrawGeom();
   paintHeads(player?.el?.currentTime || 0, true);
 }
 
@@ -805,6 +937,13 @@ function setupPlayer() {
   if (!current) return;
 
   lastHeadT = -1;   // nová nahrávka → ukazatel se musí překreslit i na stejném čase
+  if (!current.url) {
+    // Bez původního blobu není co přehrát (viz runAnalysis). Tlačítka proto
+    // zůstanou bez akce a rovnou se to řekne — mrtvé tlačítko je horší.
+    showToast('Přehrávač nejde zapnout — k nahrávce se nedostal původní soubor.');
+    setPlayIcon(false);
+    return;
+  }
   const el = new Audio();
   el.src = current.url;
   el.preload = 'metadata';
@@ -824,8 +963,12 @@ function setupPlayer() {
   $('btn-play').onclick = togglePlay;
   $('btn-loop').onclick = toggleLoop;
   $('seek').oninput = onSeekInput;
+  // Klik do kteréhokoli grafu = skok v nahrávce, stejně jako když se sáhne na
+  // lištu přehrávače. Každý graf má vlastní převod pixelu na čas.
   $('c-spr').onclick = onChartClick;
   $('c-spec').onclick = onChartClick;
+  const f1cv = $('c-f1');
+  if (f1cv) f1cv.onclick = onChartClick;
   // posuvné plátno ringu: klik do grafu i ukazatel musí počítat s posuvem
   const sprWrap = $('c-spr').parentElement;
   if (sprWrap) {
@@ -899,24 +1042,35 @@ function onSeekInput() {
   onSeekInput._t = setTimeout(() => { if (player) player.seeking = false; }, 220);
 }
 
-/** Klepnutí do grafu = přeskoč na to místo v nahrávce. */
+/**
+ * Klepnutí do grafu = přeskočení na to místo v nahrávce (totéž co táhnout
+ * lištou přehrávače). Každý graf má vlastní měřítko, proto se čas počítá
+ * podle toho, do kterého se kliklo:
+ *
+ *  - **ring** — osa je čas, ale graf se dá odscrollovat, takže se k pixelu
+ *    přičítá `sprScroll.offX` (jinak klik po odscrollování hledá o kus vedle)
+ *  - **spektrogram** — vlastní geometrie (`specGeom`), čas na ose X
+ *  - **ladění F1** — osa je čas, ale kreslí se jen tóny od G4 výš; klik proto
+ *    trefí čas přímo a skočí na něj (stejně jako u ostatních grafů)
+ */
 function onChartClick(e) {
   if (!player) return;
   const cv = e.currentTarget;
   const rect = cv.getBoundingClientRect();
-  // Při posuvu je `e.clientX` v okně, ale geometrie grafu je v souřadnicích
-  // plátna — rozdíl je právě `scrollLeft`. Bez toho by klik po odscrollování
-  // hledal o kus vedle (klik by seděl jen při scrollu 0).
   const px = e.clientX - rect.left + (cv.id === 'c-spr' ? sprScroll.offX : 0);
   let t;
   if (cv.id === 'c-spr') {
     if (!sprGeomRef) return;
     t = sprGeomRef.timeAtX(px);
+  } else if (cv.id === 'c-f1') {
+    const g = f1Geom(cv.clientWidth, F1_H, f1Notes(current?.result?.notes));
+    if (!g) return;
+    t = g.timeAtX(px);
   } else {
-    const w = cv.clientWidth, plotW = w - 42 - 12;
-    if (plotW <= 0) return;
-    t = ((px - 42) / plotW) * (current.result.duration_s || 1);
+    const g = specGeom(cv.clientWidth, SPEC_H, current.result.duration_s || 1);
+    t = g.timeAtX(px);
   }
+  if (!Number.isFinite(t)) return;
   t = Math.max(0, Math.min(t, player.el.duration || current.result.duration_s || 0));
   player.el.currentTime = t;
   // smyčka se váže na tón — po přesunu je potřeba ji přepočítat
@@ -943,8 +1097,10 @@ function updatePlayheadUI(force = false) {
     `${pm}:${String(ps).padStart(2, '0')} / ${dm}:${String(ds).padStart(2, '0')}`;
   if (!player.seeking && d > 0) $('seek').value = String(Math.round((t / d) * 1000));
 
-  // Při přehrávání se graf ringu posouvá s ukazatelem, aby byl pořád vidět.
-  if (sprScroll.width && !player.seeking) followSprScroll(t);
+  /* Při přehrávání se posouvá jen graf ringu — a jen když je zrovna vidět.
+   * Když je otevřená jiná záložka, `followSprScroll` by posouval skrytou
+   * posuvnou plochu (a měnil `offX`, se kterým se pak musí počítat klik). */
+  if (sprScroll.width && !player.seeking && lastPane === 'spr') followSprScroll(t);
   paintHeads(t, force);
 
   if (!el.paused) {
@@ -967,12 +1123,27 @@ function followSprScroll(t) {
   }
 }
 
-/** Vykreslí čáru na oba grafy; přeskočí, když se čas nezměnil. */
+/**
+ * Vykreslí ukazatel do VŠECH grafů, ne jen do toho viditelného.
+ *
+ * PROČ: přepnutí záložky je okamžité a nesmí se u toho nic dopočítávat. Kdyby
+ * se čára kreslila jen do viditelného grafu, po přepnutí by na novém plátně
+ * chvíli (nebo navždy, když se čas nezměnil) chyběla. Kresba čáry je pár tahů,
+ * takže se dá dělat do všech tří — grafy samotné se kvůli tomu NEPŘEKRESLUJÍ.
+ *
+ * `lastHeadT` drží poslední vykreslený čas, aby se při 60 snímcích za sekundu
+ * nekreslilo pořád totéž. Po přepnutí záložky se volá s `force`, protože plátno
+ * je čisté a čára se musí dokreslit i na nezměněném čase.
+ */
 function paintHeads(t, force = false) {
   if (!force && Math.abs(t - lastHeadT) < 0.004) return;
   lastHeadT = t;
   const s = current?.result?.summary;
-  if (s) drawSprHead($('c-spr-head'), current.result.notes, s, t, sprDrawOpts());
+  if (!s) return;
+  const notes = current.result.notes;
+  // Ring a ladění: bez měřitelných tónů se nic nekreslí (kresba to sama přeskočí).
+  drawSprHead($('c-spr-head'), notes, s, t, sprDrawOpts());
+  drawF1Head($('c-f1-head'), notes, t);
   const dur = current?.result?.duration_s;
   if (dur) drawSpecHead($('c-spec-head'), dur, t);
 }
@@ -1047,11 +1218,13 @@ function init() {
   $('btn-new').onclick = () => {
     teardownPlayer();
     lastHeadT = -1;
+    lastChartLayout = ''; lastPane = '';
     sprScroll.width = 0; sprScroll.offX = 0;
     const w = $('c-spr')?.parentElement;
     if (w) { w.classList.remove('scrollable'); w.onscroll = null; }
     clearHead($('c-spr-head'), SPR_H);
     clearHead($('c-spec-head'), SPEC_H);
+    clearHead($('c-f1-head'), F1_H);
     if (current?.url) URL.revokeObjectURL(current.url);
     current = null;
     $('panel-result').classList.add('hidden');
@@ -1088,6 +1261,10 @@ function init() {
   };
 
   renderHist();
+
+  // záložky grafů nad přehrávačem + překreslení po změně rozměru/DIP
+  bindChartTabs();
+  watchChartLayout();
 
   // Service worker (offline) + tlačítko pro kontrolu nové verze
   registerSW();

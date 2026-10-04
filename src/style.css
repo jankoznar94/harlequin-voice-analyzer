@@ -257,6 +257,26 @@ select:focus-visible, .btn:focus-visible, .link:focus-visible {
   width: 9px; height: 9px; border-radius: 2px; flex: none;
 }
 
+/* ── záložky grafů ──
+   Grafy bývaly pod sebou a mezi dvěma grafy se muselo vertikálně posouvat —
+   přesně to uživatel nechtěl. Teď jsou nad přehrávačem záložky: přepínač i čas
+   zůstanou na obrazovce. Stav záložky se drží jen klikem (žádný hover). */
+.chart-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 0; }
+.chart-tab {
+  flex: 1 1 auto; min-height: 44px; padding: 0 14px;
+  font: inherit; font-size: 14px; color: var(--fg-dim);
+  background: var(--bg-soft); border: 1px solid var(--line);
+  border-radius: var(--radius); cursor: pointer;
+  -webkit-tap-highlight-color: transparent; user-select: none;
+}
+.chart-tab[aria-selected="true"] {
+  color: var(--fg); background: var(--bg-input);
+  border-color: var(--accent); font-weight: 600;
+}
+.chart-tab:active { transform: translateY(1px); }
+.chart-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.chart-pane { margin-top: 10px; }
+
 /* ── přehrávač pod grafem ringu ── */
 .player {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
