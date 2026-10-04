@@ -481,6 +481,32 @@ function showResult(res, samples, sampleRate, label, secs, blob) {
           : 'Formant většinou nesedí. Na vysokých tónech se rozpadá vazba mezi výškou a barvou. To je místo pro modifikaci samohlásky.');
   }
 
+  /* ── ukazatel 3b: délka vokálního traktu (poloha hrtanu) ───────────── */
+  /* Metrika je z formantů, které se u vyšších tónů často nepodaří najít
+   * (LPC chytne harmonickou) — proto se počet použitých tónů hlásí vždy
+   * a z malého počtu se staví jen „orientačně". */
+  if (!(s.vtl_cm > 0)) {
+    setKpi('k-vtl', '—', 'v nahrávce nejsou použitelné formanty', 'none', 'k-vtl-d',
+      'Délka traktu se počítá z rozestupu formantů F1–F3. Když se formanty ' +
+      'nepodaří spolehlivě najít (typicky na vysokých tónech), číslo se nehlásí — ' +
+      'vymyšlené číslo je horší než žádné. Zkus zazpívat tóny v nižší poloze (do ~200 Hz).');
+  } else {
+    const n = s.vtl_n, z = s.vtl_z_tonek;
+    const cls = n >= 5 ? 'ok' : n >= 3 ? 'mid' : 'none';
+    setKpi('k-vtl', s.vtl_cm.toFixed(1), 
+      `cm · z ${n} ${czPlural(n, 'tónu', 'tónů', 'tónů')}${z > n ? ` z ${z}` : ''}`,
+      cls, 'k-vtl-d',
+      `Odhad z rozestupu formantů (dF ${Math.round(s.vtl_dF_hz)} Hz). ` +
+      'Nižší hrtan = delší trakt = formanty níž a blíž k sobě, a naopak. ' +
+      (n >= 5
+        ? 'Počet tónů stačí na srovnání s tvými ostatními nahrávkami. '
+        : 'Z tak malého počtu tónů je to jen orientační — ber to jako stopu, ne měření. ') +
+      'Číslo je záměrně RELATIVNÍ: srovnávej ho mezi vlastními nahrávkami, ' +
+      'ne s tabulkami. Absolutní hodnota je posunutá zhruba o 1,5 cm nahoru, ' +
+      'protože vzorec předpokládá rovnoměrnou trubici. ' +
+      (n < z ? `Vyřazeno ${z - n} ${czPlural(z - n, 'tón', 'tóny', 'tónů')}, u kterých formanty vyšly mimo fyziologický rozsah.` : ''));
+  }
+
   /* ── ukazatel 4: kolik tónů se změřilo ─────────────────────────────── */
   const exc = [];
   if (s.n_excluded_short) exc.push(`${s.n_excluded_short} ${czPlural(s.n_excluded_short, 'útržek', 'útržky', 'útržků')} pod ${s.min_dur_used.toFixed(2)} s`);
@@ -628,6 +654,17 @@ function verdict(res) {
 
   if (s.f1_aligned_pct !== null && s.f1_aligned_pct < 60) {
     parts.push(`Nad G4 se první formant trefuje jen v ${s.f1_aligned_pct.toFixed(0)} % — tam se rozpadá ladění. To je místo pro modifikaci samohlásky.`);
+  }
+
+  /* Délka vokálního traktu (poloha hrtanu). Dvě věci se musí říct VŽDY:
+   *  - číslo je relativní (srovnatelné mezi vlastními nahrávkami), ne anatomie
+   *  - z kolika tónů se počítalo. Vysoká poloha metrika nemá (naměřeno: nad
+   *    250 Hz přežije filtr 1 tón z 23), takže „z 1 tónu" NENÍ měření. */
+  if (s.vtl_cm > 0) {
+    const sila = s.vtl_n >= 5 ? 'ok' : s.vtl_n >= 3 ? 'slabsi' : 'malo';
+    parts.push(sila === 'ok'
+      ? `Délka vokálního traktu vyšla ${s.vtl_cm.toFixed(1)} cm (z ${s.vtl_n} tónů) — srovnatelné s tvými ostatními nahrávkami, ne absolutní údaj o anatomii.`
+      : `Délka vokálního traktu vyšla ${s.vtl_cm.toFixed(1)} cm, ale jen z ${s.vtl_n} ${czPlural(s.vtl_n, 'tónu', 'tónů', 'tónů')} — to je slabý základ. Zazpívej víc tónů v NIŽŠÍ poloze (do ~200 Hz), tam metrika funguje.`);
   }
 
   parts.push('<em>Srovnávej jen sám sebe, stejným mikrofonem a vzdáleností. Rozdíly pod 2 dB nejsou signál.</em>');
@@ -1244,6 +1281,19 @@ function makeMarkdown() {
         'vada hlasu, jen se na tóny v této poloze reference nevztahuje.)');
     }
     L.push(`- Ladění od G4: ${s.f1_aligned_pct === null ? '—' : s.f1_aligned_pct.toFixed(1) + ' %'}`);
+    /* Délka vokálního traktu (poloha hrtanu) — záměrně s počtem tónů
+     * a s upozorněním, že jde o relativní číslo. Bez toho by ho někdo
+     * srovnával s tabulkami a divil se, že mu trakt „vyrostl" o 1,5 cm. */
+    if (s.vtl_cm > 0) {
+      L.push(`- Délka vokálního traktu: **${s.vtl_cm.toFixed(1)} cm** ` +
+        `(z ${s.vtl_n} ${czPlural(s.vtl_n, 'tónu', 'tónů', 'tónů')}, dF ${Math.round(s.vtl_dF_hz)} Hz)` +
+        (s.vtl_n < 5 ? ' — z mála tónů, jen orientační' : ''));
+      L.push('  (Relativní údaj: srovnávej mezi vlastními nahrávkami, ne s tabulkami. ' +
+        'Absolutní hodnota je posunutá ~1,5 cm nahoru — vzorec předpokládá rovnoměrnou trubici.)');
+      if (s.vtl_z_tonek > s.vtl_n) {
+        L.push(`  (Vyřazeno ${s.vtl_z_tonek - s.vtl_n} tónů, u kterých formanty vyšly mimo fyziologický rozsah.)`);
+      }
+    }
   }
   L.push('', '## Po tónech', '');
   L.push('| # | tón | čas | f0 Hz | délka | SPR dB | ring | F1 | F2 | F1:F0 % | HNR | vibr. Hz |');

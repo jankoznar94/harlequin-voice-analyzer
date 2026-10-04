@@ -1269,6 +1269,66 @@ export function vibrato(f0, dt) {
 
 /* ---------------------------------------------------------------- KONFIG -- */
 
+/* ------------------------------------------------- DÉLKA VOKÁLNÍHO TRAKTU -- */
+
+/**
+ * Délka vokálního traktu (poloha hrtanu) z rozestupu formantů.
+ *
+ * PROČ: poloha hrtanu se z nahrávky čte právě takhle — nižší hrtan = delší
+ * trakt = všechny formanty níž a blíž k sobě. `VTL = c / (2·dF)`, kde `dF` je
+ * průměrný rozestup F1–F3 (model rovnoměrné trubice).
+ *
+ * NAMĚŘENO (syntetika se známou pravdou + reálná nahrávka, `tools/exp-hrtan-formanty.mjs`):
+ *  - když formanty vyjdou správně, je chyba **0,0–0,5 cm**; medián přes tóny
+ *    0,01–0,32 cm. Na reálné nahrávce (24 kHz, 13 s) medián 18,8 cm při
+ *    rozptylu 0,3 cm mezi úseky.
+ *
+ * ⚠️ **ABSOLUTNÍ ČÍSLO JE ZKRESLENÉ ~1,4 cm NAHORU** (pravda 17,15 → odhad
+ * 18,5). Vzorec předpokládá rovnoměrnou trubici, skutečný trakt ne. Zkreslení
+ * je ale konzistentní (korelace s f0 jen r = −0,26), takže **srovnávat mezi
+ * vlastními nahrávkami se smí**, tvrdit absolutní anatomii ne.
+ *
+ * ⚠️ **POJISTKA JE NUTNÁ, ne kosmetika.** LPC občas chytne HARMONICKOU místo
+ * formantu a vyjde dF 337–672 Hz, tedy VTL 26–51 cm — to je mimo fyziologii
+ * (trakt 13–20 cm). Filtrem `dF ∈ 780–1429 Hz` (VTL 12–22 cm, s rezervou) se
+ * tyhle případy POZNAJÍ a vyřadí. Bez filtru metrika občas hlásí 45 cm.
+ *
+ * ⚠️ **HLAVNÍ OMEZENÍ: vysoko je metrika PRÁZDNÁ.** Naměřeno: pod 250 Hz
+ * přežije filtr 7 tónů z 12, nad 250 Hz jen **1 z 23** — čím vyšší tón, tím
+ * častěji LPC chytne harmonickou (formanty daleko od sebe = obálka nemá
+ * z čeho vzniknout). Šum to nespraví (23 % → 26 %). Proto je tu `n` a proto
+ * se `pocet_pouzitych` hlásí v UI: číslo z jednoho tónu není měření.
+ *
+ * @returns {{vtl_cm:number, dF_hz:number, n:number, z_tonek:number}|null}
+ */
+export function delkaTraktu(noty) {
+  const VTL_MIN = 12, VTL_MAX = 22;
+  const dFmin = 34300 / (2 * VTL_MAX), dFmax = 34300 / (2 * VTL_MIN);
+  const vsechny = [];
+  for (const n of noty || []) {
+    const v = [n.f1, n.f2, n.f3].filter(x => x === x && x > 0);
+    if (v.length < 2) continue;
+    vsechny.push(v);
+  }
+  if (!vsechny.length) return null;
+  const rozestupy = [];
+  for (const v of vsechny) {
+    let s = 0;
+    for (let i = 1; i < v.length; i++) s += v[i] - v[i - 1];
+    rozestupy.push(s / (v.length - 1));
+  }
+  const pouzite = rozestupy.filter(d => d >= dFmin && d <= dFmax);
+  if (!pouzite.length) return null;
+  const s = [...pouzite].sort((a, b) => a - b);
+  const dF = s.length & 1 ? s[s.length >> 1] : (s[(s.length >> 1) - 1] + s[s.length >> 1]) / 2;
+  return {
+    vtl_cm: 34300 / (2 * dF),
+    dF_hz: dF,
+    n: pouzite.length,
+    z_tonek: rozestupy.length,
+  };
+}
+
 export const REFS = {
   SPR: {
     nezpevak: [-22.7, 5.1],
@@ -1744,6 +1804,13 @@ export function ringAnalysis(notes, opts = {}) {
   const [refNezpevak, refProf] = [REFS.SPR.nezpevak[0], REFS.SPR.profesional[0]];
   const level = med >= refProf ? 'profesionalni' : med >= refNezpevak ? 'mezi' : 'pod_nezpevakem';
 
+  /* Délka vokálního traktu (poloha hrtanu) — z VŠECH tónů, ne jen z `usable`:
+   * metrika se počítá z formantů a vyřazení tichých/krátkých tónů s ní nemá
+   * co dělat (naopak: čím víc tónů, tím lepší medián). Vrací i počet tónů,
+   * ze kterých se počítalo — bez toho by číslo z jediného tónu vypadalo
+   * stejně jako číslo z dvaceti. */
+  const trakt = delkaTraktu(notes);
+
   return {
     spr_unusable: false,
     n_notes: usable.length,
@@ -1780,5 +1847,11 @@ export function ringAnalysis(notes, opts = {}) {
     f1_aligned_pct: rel.length ? 100 * rel.filter(n => n.f1_tuned).length / rel.length : null,
     fhe_median: fhes.length ? fhes[fhes.length >> 1] : null,
     bandwidth_hz: bands.length ? bands[bands.length >> 1] : null,
+    // Délka vokálního traktu (poloha hrtanu). `null` = ani jeden tón neměl
+    // formanty použitelné (typicky vysoká poloha — viz delkaTraktu).
+    vtl_cm: trakt ? trakt.vtl_cm : null,
+    vtl_dF_hz: trakt ? trakt.dF_hz : null,
+    vtl_n: trakt ? trakt.n : 0,
+    vtl_z_tonek: trakt ? trakt.z_tonek : 0,
   };
 }
