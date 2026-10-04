@@ -299,12 +299,17 @@ check('tlačítko má přiřazenou akci', typeof el('btn-update').onclick === 'f
 {
   const sw = fs.readFileSync(path.join(DIR, '..', 'sw.js'), 'utf8');
   check('sw.js poslouchá na SKIP_WAITING', /SKIP_WAITING/.test(sw) && /skipWaiting/.test(sw));
-  // install nesmí volat skipWaiting — jinak by se nová verze aktivovala sama
-  // a tlačítko by nemělo co dělat. Hlídá se jen tělo install handleru.
-  const installHandler = sw.match(/addEventListener\('install'[\s\S]*?\n\}\);/);
-  check('sw.js se sám neaktivuje při instalaci (čeká na tlačítko)',
-    installHandler && !/skipWaiting/.test(installHandler[0]),
-    installHandler ? 'tělo install handleru zkontrolováno' : 'install handler nenalezen');
+  /* `skipWaiting` v `install` JE, ale VÝHRADNĚ podmíněně — je to jednorázová
+   * záchrana zařízení, jejichž cache vznikla před tlačítkem (starý index.html
+   * bez tlačítka se z toho sám nevyhrabal). Kdyby se volal bezpodmínečně,
+   * aktivovala by se nová verze sama a tlačítko by nemělo co dělat.
+   * Chování (uvnitř okna ano, po vypršení ne) hlídá `test-sw-rescue.mjs`
+   * včetně mutace; tady se kontroluje jen to, že volání není bez podmínky. */
+  const installHandler = sw.match(/addEventListener\('install'[^\n]*\n[\s\S]*?\n\}\);/);
+  const body = installHandler ? installHandler[0] : '';
+  check('sw.js se sám neaktivuje bez podmínky (skipWaiting je vázaný na RESCUE)',
+    !!installHandler && /RESCUE/.test(body) && /RESCUE\s*\?/.test(body),
+    installHandler ? 'install handler zkontrolován' : 'install handler nenalezen');
   check('sw.js po aktivaci převezme kontrolu', /clients\.claim/.test(sw));
 
   const html = fs.readFileSync(path.join(DIR, '..', 'index.html'), 'utf8');
