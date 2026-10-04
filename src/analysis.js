@@ -78,8 +78,15 @@ function hann(n) {
 
 /* ------------------------------------------------------- SPEKTRÁLNÍ METRIKY - */
 
-/** Long-term average spectrum. Vrací {freq, db} (db = 10*log10 výkon). */
-export function ltas(samples, sampleRate, nfft = 4096, hop = null) {
+/**
+ * Long-term average spectrum. Vrací {freq, db} (db = 10*log10 výkon).
+ *
+ * @param {function} [onFrame] volitelný odběr průběhu `(hotovo, celkem)`.
+ *   Volá se zhruba třicetkrát za běh. Slouží k poctivému hlášení průběhu:
+ *   fáze „kontroluji šířku pásma" je na velkých nahrávkách dlouhá a bez
+ *   odběru o ní UI neví nic (viz komentář u analyze()).
+ */
+export function ltas(samples, sampleRate, nfft = 4096, hop = null, onFrame = null) {
   const n = Math.min(nfft, 1 << Math.floor(Math.log2(samples.length)));
   const frameSize = n;
   const step = hop || frameSize >> 1;
@@ -88,11 +95,15 @@ export function ltas(samples, sampleRate, nfft = 4096, hop = null) {
   const acc = new Float64Array(half);
   let count = 0;
 
+  const total = Math.max(0, Math.floor((samples.length - frameSize) / step) + 1);
+  const stride = Math.max(1, Math.floor(total / 30));
+
   for (let start = 0; start + frameSize <= samples.length; start += step) {
     const frame = samples.subarray(start, start + frameSize);
     const p = powerSpectrum(frame, win);
     for (let i = 0; i < half; i++) acc[i] += p[i];
     count++;
+    if (onFrame && (count % stride === 0 || count === total)) onFrame(count, total);
   }
   if (count === 0) return null;
 
@@ -515,8 +526,17 @@ export function pitchTrack(samples, sampleRate, opts = {}) {
   const times = new Float64Array(nFrames);
   const f0 = new Float64Array(nFrames);
 
+  /* Odběr průběhu. Hledání výšky je ~85 % práce celé analýzy, takže bez
+   * hlášení UVNITŘ téhle smyčky UI neví o většině běhu nic — pruh se plazí
+   * jen po měkké složce a odhad zbývajícího času z něj vychází špatně
+   * (reálná stížnost: „vystoupá vysoko a pak rychle spadne"). Hlásí se
+   * zhruba stokrát za běh; volání je jen poslání zprávy, na čísla nemá vliv. */
+  const onF = typeof opts.onProgress === 'function' ? opts.onProgress : null;
+  const stride = Math.max(1, Math.round(nFrames / 100));
+
   for (let fi = 0; fi < nFrames; fi++) {
     const start = fi * hopSize;
+    if (onF && (fi % stride === 0 || fi === nFrames - 1)) onF(fi + 1, nFrames);
     times[fi] = (start + frameSize / 2) / sampleRate;
 
     // RMS gate
@@ -1185,7 +1205,17 @@ export function analyze(samples, sampleRate, opts = {}) {
   // Ne po tónech! Když se měří per-tón, výsledek sleduje tvar šumového dna
   // daného úseku, ne skutečnou šířku pásma — a čisté tóny pak propadnou,
   // zatímco zašuměné projdou. Ověřeno na případech se známou pravdou.
-  const specFull = ltas(samples, sampleRate);
+  if (duration >= 30) {
+    // Odběr průběhu i uvnitř pásma. Na krátkých nahrávkách je pásmo otázka
+    // milisekund a procenta by jen poskakovala; od 30 s je to druhá nejdelší
+    // fáze (u nahrávky bez zpívaných tónů dokonce nejdelší — 0,21 s proti
+    // 2,6 s hledání výšky u Carusa).
+    progress(0.05, 'Kontroluji šířku pásma… 0 %');
+  }
+  const specFull = ltas(samples, sampleRate, 4096, null, duration >= 30
+    ? (i, total) => progress(0.05 + 0.07 * (i / total),
+        `Kontroluji šířku pásma… ${Math.round((i / total) * 100)} %`)
+    : null);
   const band = specFull
     ? sprValid(specFull, 4100, { fileRate: opts.fileRate })
     : { valid: false, reason: 'spektrum nelze vyhodnotit', limit: NaN };
@@ -1203,7 +1233,21 @@ export function analyze(samples, sampleRate, opts = {}) {
    * Kdyby se to někdy mělo zrychlit i tudy, musí se nejdřív přegenerovat zlatý
    * standard a projít všechny reporty: čísla ringu se posunou.
    */
-  const { times, f0 } = pitchTrack(samples, sampleRate);
+  const { times, f0 } = pitchTrack(samples, sampleRate, {
+    // Poctivý průběh místo jednoho skoku z 12 % na 35 %.
+    //
+    // PROČ: hledání výšky je ~85 % práce celé analýzy, ale hlásilo se jako
+    // jediný skok. Pruh se tak plazil jen po „měkké" složce (ta k 35 % doroste
+    // za ~4,5 s) a na delší nahrávce pak stál — zatímco odhad zbývajícího času,
+    // počítaný z podílu `uběhlo / ukázáno`, vyletěl nahoru a před koncem spadl.
+    // Naměřeno (zpev.wav 72,6 s / 68 tónů): band 0,18 s · pitch 1,58 s ·
+    // tóny 0,41 s · zbytek 0,006 s. Bez odběru uvnitř fází je z těch čísel
+    // vidět jen to, že „35 %" je hotovo po 1,8 s z 2,2 s — tedy nic.
+    // Odběr každý ~1 % (tj. zhruba po 17 ms na této nahrávce) nic nestojí
+    // a hlavní vlákno si ho stejně vyzvedne až ve chvíli, kdy je volné.
+    onProgress: (i, total) => progress(0.12 + 0.23 * (i / total),
+      `Sleduji výšku tónu… ${Math.round((i / total) * 100)} %`),
+  });
   progress(0.35, 'Dělím nahrávku na tóny…');
 
   // Segmentace: hysterezní čítač s ukotvenou notou. Nahradil starou segmentaci,
@@ -1229,6 +1273,16 @@ export function analyze(samples, sampleRate, opts = {}) {
 
   progress(0.45, `Měřím ${kept.length} tónů…`);
 
+  /* Měření tónů se hlásí podle SKUTEČNĚ UDĚLANÉ PRÁCE (součet délek tónů),
+   * ne po deseti kusech. PROČ: tóny mají různou délku a `measureNote` stojí
+   * čas úměrně délce — hlášení po deseti tónech proto kráčí nestejně, u
+   * posledních pár dlouhých tónů se zastaví a odhad zbývajícího času z toho
+   * vyroste (naměřeno 8× víc, než zbývalo). Počítá se dopředu jen součet
+   * délek, což je pár čísel; výsledek analýzy to neovlivní. */
+  const totalNoteSecs = kept.reduce((s, p) => s + Math.max(0, p.t1 - p.t0), 0) || 1;
+  let doneNoteSecs = 0;
+  let reportedNoteFrac = 0;
+
   const notes = [];
   for (let i = 0; i < kept.length; i++) {
     const p = kept[i];
@@ -1240,8 +1294,13 @@ export function analyze(samples, sampleRate, opts = {}) {
       nm.is_glide = p.isGlide;
       notes.push(nm);
     }
-    if (i % 10 === 0) progress(0.45 + 0.45 * (i / Math.max(1, kept.length)),
-      `Měřím tón ${i + 1}/${kept.length}…`);
+    doneNoteSecs += Math.max(0, p.t1 - p.t0);
+    // hlásí se, jen když práce postoupí o půl procenta (u stovek krátkých tónů
+    // by jinak UI dostávalo stovky zpráv, které nic neřeknou) — a vždy na konci
+    if (doneNoteSecs / totalNoteSecs - reportedNoteFrac >= 0.005 || i === kept.length - 1) {
+      reportedNoteFrac = doneNoteSecs / totalNoteSecs;
+      progress(0.45 + 0.45 * reportedNoteFrac, `Měřím tón ${i + 1}/${kept.length}…`);
+    }
   }
 
   progress(0.92, 'Vyhodnocuji ring…');
