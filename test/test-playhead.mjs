@@ -27,7 +27,11 @@ globalThis.document = {
 
 const mod = await import('../src/charts.js');
 const { sprGeom, specGeom, drawSpr, drawPlayhead, drawSprHead, drawSpecHead,
-        clearHead, f1Geom, f1Notes, drawF1Head, drawF1 } = mod;
+        clearHead, f1Geom, f1Notes, drawF1Head, drawF1, F1_H } = mod;
+
+import fs from 'node:fs';
+import path from 'node:path';
+const root = path.join(import.meta.dirname, '..');
 
 let pass = 0, fail = 0;
 const check = (name, ok, detail = '') => {
@@ -170,8 +174,25 @@ console.log('\n═══ drawSpr vrací geometrii pro klik ═══\n');
 
 console.log('\n═══ Spektrogram: ukazatel sedí na hranice tónů ═══\n');
 
-const DUR = 9.0, SPEC_W = 800, SPEC_H = 300;
+const DUR = 9.0, SPEC_W = 800, SPEC_H = 230;
 const sg = specGeom(SPEC_W, SPEC_H, DUR);
+
+/* ⚠️ REGRESE, KTEROU UŽIVATEL VIDĚL: spektrogram byl o 70 px vyšší (SPEC_H = 300)
+ * než graf ringu. Přepnutí záložky tím posunulo celý obsah pod panely —
+ * přehrávač, čas i lištu — a stránka „uskakovala" vertikálně nahoru a dolů.
+ * Zdroj pravdy o výšce je `charts.js`; HTML i CSS se podle něj musí řídit. */
+{
+  const src = fs.readFileSync(path.join(root, 'src/charts.js'), 'utf8');
+  const htmlSrc = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  const sprH = Number((src.match(/export const SPR_H = (\d+)/) || [])[1]);
+  const specH = Number((src.match(/export const SPEC_H = (\d+)/) || [])[1]);
+  check('spektrogram má stejnou výšku jako graf ringu (panely neuskakují)',
+    specH === sprH, `SPEC_H ${specH} vs SPR_H ${sprH}`);
+  check('HTML nedrží vlastní výšku spektrogramu',
+    !/class="chart tall"/.test(htmlSrc) && !/id="c-spec"[^>]*height="300"/.test(htmlSrc),
+    'musí být class="chart" a height 230');
+}
+
 check('specGeom: čas 0 je na levém okraji', sg.x(0) === sg.padL);
 check('specGeom: konec nahrávky je na pravém okraji',
   Math.abs(sg.x(DUR) - (sg.padL + sg.plotW)) < 1e-9);
@@ -268,10 +289,12 @@ console.log('\n═══ Graf ladění: osa je čas, ukazatel i klik sedí na t�
   check('graf ladění bere jen tóny od G4 výš', rel.length === 4,
     `${rel.length} z ${F1_NOTES.length}`);
 
-  const g1 = f1Geom(W, 200, rel);
+  /* Výška se bere z kódu (`F1_H`) — pevné číslo by při každé změně layoutu
+   * tiše rozešlo test s kresbou (přesně to se stalo: 200 vs 230). */
+  const g1 = f1Geom(W, F1_H, rel);
   check('geometrie grafu ladění se spočítá', !!g1);
   check('bez tónů od G4 geometrie neexistuje (graf hlásí „nelze hodnotit")',
-    f1Geom(W, 200, f1Notes(NOTES)) === null);
+    f1Geom(W, F1_H, f1Notes(NOTES)) === null);
   check('osa X končí na konci posledního tónu (9 s)', g1.t1 === 9.0, `t1=${g1.t1}`);
   check('osa X začíná na levém okraji', g1.x(0) === g1.padL);
   check('osa X končí na pravém okraji',
@@ -297,7 +320,7 @@ console.log('\n═══ Graf ladění: osa je čas, ukazatel i klik sedí na t�
 
   // Ukazatel musí mít platné souřadnice i na plátně — regrese, kdy `specGeom`
   // vracel `plotT` místo `padT` a čára se „nakreslila" mimo plátno bez chyby.
-  const { canvas, ops } = mockCanvas(W, 200);
+  const { canvas, ops } = mockCanvas(W, F1_H);
   drawF1Head(canvas, F1_NOTES, 3.0);
   const vert = ops.lines.find(l => l.from.y === g1.padT && l.to.y === g1.padT + g1.plotH);
   check('ukazatel v grafu ladění má platné souřadnice', !!vert,
@@ -305,10 +328,10 @@ console.log('\n═══ Graf ladění: osa je čas, ukazatel i klik sedí na t�
   check('ukazatel v grafu ladění sedí na čas 3 s', vert && Math.abs(vert.from.x - g1.x(3.0)) < 1,
     `x=${vert.from.x} vs ${g1.x(3.0).toFixed(1)}`);
   check('mimo plochu grafu se ukazatel ladění nekreslí',
-    (() => { const m = mockCanvas(W, 200); drawF1Head(m.canvas, F1_NOTES, 99); return m.ops.strokes === 0; })());
+    (() => { const m = mockCanvas(W, F1_H); drawF1Head(m.canvas, F1_NOTES, 99); return m.ops.strokes === 0; })());
 
   // Graf samotný: drawF1 musí vrátit geometrii (app ji používá pro klik).
-  const { canvas: c2, ops: o2 } = mockCanvas(W, 200);
+  const { canvas: c2, ops: o2 } = mockCanvas(W, F1_H);
   const gr = drawF1(c2, F1_NOTES, null);
   check('drawF1 vrací geometrii pro klik', !!gr && typeof gr.timeAtX === 'function');
   const bars = (o2.fills || []).filter(f => f[3] > 0 && f[2] <= 18);

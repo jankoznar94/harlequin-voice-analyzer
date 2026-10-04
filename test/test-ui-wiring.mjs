@@ -216,6 +216,58 @@ console.log('\n═══ 10. Každý modul, který app.js importuje, je v servic
     `CACHE v${cacheV}, index v${htmlV}, APP_VERSION ${appV}`);
 }
 
+console.log('\n═══ 10. Výška panelů záložek: přepnutí nesmí posunout stránku ═══');
+/* ⚠️ REGRESE, KTEROU UŽIVATEL VIDĚL: spektrogram měl vlastní výšku 300 px
+ * (třída `.tall`), kdežto graf ringu 230 px. Přepnutí záložky tím posunulo
+ * celý obsah POD panely o 70 px — přehrávač, čas i lištu — takže stránka
+ * „uskakovala" vertikálně nahoru a dolů. Zdroj pravdy o výšce je `charts.js`
+ * (`SPR_H`, `SPEC_H`, `F1_H`); HTML i CSS se podle něj musí řídit a stejnou
+ * výšku musí mít i překryvné plátno ukazatele (`.chart-head`). */
+{
+  const num = (src, name) => Number((src.match(new RegExp(`${name} = (\\d+)`)) || [])[1]);
+  const h = { spr: num(charts, 'SPR_H'), spec: num(charts, 'SPEC_H'), f1: num(charts, 'F1_H') };
+  check(`panely mají stejnou výšku (spr ${h.spr} / spec ${h.spec} / f1 ${h.f1})`,
+    h.spr === h.spec && h.spec === h.f1);
+
+  const css = fs.readFileSync(path.join(root, 'src/style.css'), 'utf8');
+  /* Bere se podle ID, ne podle třídy — `#c-trend` má taky `class="chart"`
+   * a v sekci by pletl počet i výšky. */
+  const heightOf = (id) => {
+    const m = html.match(new RegExp(`<canvas[^>]*id="${id}"[^>]*height="(\\d+)"`));
+    return m ? Number(m[1]) : NaN;
+  };
+  const bases = ['c-spr', 'c-spec', 'c-f1'].map(heightOf);
+  const heads = ['c-spr-head', 'c-spec-head', 'c-f1-head'].map(heightOf);
+  check('HTML: překryvná plátna mají stejnou výšku jako grafy',
+    heads.every((v, i) => Number.isFinite(v) && v === bases[i]),
+    `grafy ${bases.join('/')} vs plátna ${heads.join('/')}`);
+  check('HTML: výška pláten v HTML sedí na konstanty z charts.js',
+    bases[0] === h.spr && bases[1] === h.spec && bases[2] === h.f1,
+    `HTML ${bases.join('/')} vs kód ${h.spr}/${h.spec}/${h.f1}`);
+  check('CSS nedrží vlastní výšku spektrogramu (třída .tall)',
+    !/\.chart\.tall\b/.test(css) && !/\.chart-head\.tall\b/.test(css));
+  check('CSS: plátno ukazatele má pevnou výšku 230 px (nesmí roztáhnout panel)',
+    /\.chart-wrap \.chart-head \{[^}]*height: 230px/.test(css));
+  /* ⚠️ `flow-root` je nutnost, ne kosmetika: bez něj se margin odstavců
+   * v patičce slije s okrajem a unikne ven — naměřeno v prohlížeči 330/332/334 px
+   * podle množství textu, takže se obsah pod grafy hýbal o 4 px. */
+  check('CSS: patička panelu drží marginy uvnitř (display: flow-root)',
+    /\.pane-foot \{[^}]*display: flow-root/.test(css));
+  check('CSS: patička panelu má rezervovanou výšku (min-height)',
+    /\.pane-foot \{[^}]*min-height: \d+px/.test(css));
+  /* Text záložky musí být v patičce POD grafem — kdyby stál v HTML před
+   * `.chart-wrap`, posunul by při přepnutí záložky graf svisle dolů. */
+  const panes = ['spr', 'spec', 'f1'];
+  const textAbove = panes.filter(c => {
+    const block = html.match(new RegExp(`id="pane-${c}"[\\s\\S]*?</div>\\s*</div>|<div class="chart-pane[^>]*id="pane-${c}"[\\s\\S]*?<div class="chart-pane`));
+    return block && /class="(hint|chart-legend)"[\s\S]*?class="chart-wrap"/.test(block[0]);
+  });
+  check('HTML: text v panelech stojí POD grafem (v .pane-foot)', textAbove.length === 0,
+    textAbove.length ? 'nad grafem: ' + textAbove.join(', ') : '');
+  check('HTML: každý panel má .pane-foot (stejná struktura)',
+    panes.every(c => new RegExp(`id="pane-${c}"[\\s\\S]*?class="pane-foot"`).test(html)));
+}
+
 console.log(`\n═══ ${pass} prošlo, ${fail} selhalo ═══`);
 if (fail) console.log('\nUI by v prohlížeči hlásilo chyby.');
 process.exitCode = fail ? 1 : 0;

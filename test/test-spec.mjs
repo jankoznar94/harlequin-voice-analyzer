@@ -71,7 +71,7 @@ function concat(parts, gapS, sr) {
 }
 
 const SR = 44100;
-const H = 300, PADL = 42, PADT = 12, PADR = 12, PADB = 26;
+const H = 230, PADL = 42, PADT = 12, PADR = 12, PADB = 26;   // jako SPEC_H v charts.js
 const DPR = globalThis.window.devicePixelRatio;
 
 /** Vykreslí spektrogram a vrátí rozbor pixelů. */

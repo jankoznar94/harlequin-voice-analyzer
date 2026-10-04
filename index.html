@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Hlas">
-<link rel="stylesheet" href="src/style.css?v=20">
+<link rel="stylesheet" href="src/style.css?v=21">
 </head>
 <body>
 
@@ -266,33 +266,37 @@
             <canvas id="c-spr" class="chart" height="230"></canvas>
             <canvas id="c-spr-head" class="chart-head" height="230" aria-hidden="true"></canvas>
           </div>
-          <!-- Legenda je v HTML, ne v plátně: při posuvu by se lepila na okraj
-               a musela by se kreslit s ohledem na scrollLeft. -->
-          <p class="chart-legend">
-            <span><i style="background:#6a9e6a"></i>ring drží</span>
-            <span><i style="background:#b5675e"></i>výpadek ringu</span>
-            <span><i style="background:#6f6862"></i>neměřeno (krátký/tichý tón)</span>
-            <span>barvy pásem na pozadí = literatura, orientačně</span>
-          </p>
-          <p class="hint hidden" id="hint-scroll">Graf je širší než displej — jezdí se
-             po něm vodorovně, aby hodnoty u delších nahrávek nebyly nalepené.
-             Ukazatel se posouvá sám s nahrávkou.</p>
-        </div>
-
-        <div class="chart-pane hidden" id="pane-spec" role="tabpanel" data-chart="spec" aria-labelledby="tab-spec">
-          <p class="hint">Světlejší pruh kolem 2,5–3,2 kHz je pásmo zpěváckého
-             formantu (ring). Kde pruh chybí, tam ring na tónu není.</p>
-          <div class="chart-wrap">
-            <canvas id="c-spec" class="chart tall" height="300"></canvas>
-            <canvas id="c-spec-head" class="chart-head tall" height="300" aria-hidden="true"></canvas>
+          <!-- Text je VŽDY POD grafem a v pevně vysoké patičce (`.pane-foot`).
+               Když byl nad grafem (ladění) nebo chyběl (spektrogram), přepnutí
+               záložky posunulo graf i všechno pod ním svisle. Legenda je
+               v HTML, ne v plátně: při posuvu by se lepila na okraj. -->
+          <div class="pane-foot">
+            <p class="chart-legend">
+              <span><i style="background:#6a9e6a"></i>ring drží</span>
+              <span><i style="background:#b5675e"></i>výpadek ringu</span>
+              <span><i style="background:#6f6862"></i>neměřeno (krátký/tichý tón)</span>
+              <span>pásma na pozadí = literatura</span>
+            </p>
+            <p class="hint hidden" id="hint-scroll">Graf se posouvá vodorovně,
+               ukazatel jede s nahrávkou.</p>
           </div>
         </div>
 
-        <div class="chart-pane hidden" id="pane-f1" role="tabpanel" data-chart="f1" aria-labelledby="tab-f1">
-          <p class="hint" id="hint-f1"></p>
+        <div class="chart-pane hidden" id="pane-spec" role="tabpanel" data-chart="spec" aria-labelledby="tab-spec">
           <div class="chart-wrap">
-            <canvas id="c-f1" class="chart" height="200"></canvas>
-            <canvas id="c-f1-head" class="chart-head" height="200" aria-hidden="true"></canvas>
+            <canvas id="c-spec" class="chart" height="230"></canvas>
+            <canvas id="c-spec-head" class="chart-head" height="230" aria-hidden="true"></canvas>
+          </div>
+          <div class="pane-foot"></div>
+        </div>
+
+        <div class="chart-pane hidden" id="pane-f1" role="tabpanel" data-chart="f1" aria-labelledby="tab-f1">
+          <div class="chart-wrap">
+            <canvas id="c-f1" class="chart" height="230"></canvas>
+            <canvas id="c-f1-head" class="chart-head" height="230" aria-hidden="true"></canvas>
+          </div>
+          <div class="pane-foot">
+            <p class="hint" id="hint-f1"></p>
           </div>
         </div>
       </div>
@@ -376,6 +380,6 @@
 
 <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
-<script type="module" src="src/app.js?v=20"></script>
+<script type="module" src="src/app.js?v=21"></script>
 </body>
 </html>

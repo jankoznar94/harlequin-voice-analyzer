@@ -203,7 +203,10 @@ select:focus-visible, .btn:focus-visible, .link:focus-visible {
   border: 1px solid var(--line);
   border-radius: var(--radius);
 }
-.chart.tall { height: 300px; }
+/* Spektrogram měl vlastní výšku 300 px (`.tall`). Byl o 70 px vyšší než graf
+   ringu, takže při přepnutí záložky uskočil celý obsah pod grafy — přehrávač
+   i čas. Výšku má teď stejnou jako ostatní panely (230 px) a třída `.tall`
+   proto zmizela. `drawSpec`/`drawSpecHead` kreslí podle `SPEC_H`. */
 
 /* Graf + průhledné plátno s ukazatelem přehrávání přes něj.
    Ukazatel se hýbe 60× za sekundu, kdežto graf se kreslí jednou — překreslovat
@@ -216,7 +219,6 @@ select:focus-visible, .btn:focus-visible, .link:focus-visible {
   display: block;
   pointer-events: none;   /* kliky jdou na graf pod ukazatelem */
 }
-.chart-wrap .chart-head.tall { height: 300px; }
 
 /* Posuvné plátno grafu ringu (delší nahrávky — tóny by byly nalepené).
    Posouvá se JEN graf ringu; spektrogram zůstává na šířku displeje. */
@@ -276,6 +278,22 @@ select:focus-visible, .btn:focus-visible, .link:focus-visible {
 .chart-tab:active { transform: translateY(1px); }
 .chart-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .chart-pane { margin-top: 10px; }
+/* Patička panelu: text záložky je VŽDY POD grafem (nikdy nad ním). Vysvětlivka
+   spektrogramu i ladění bývala NAD grafem — při přepnutí záložky tím posunula
+   graf svisle dolů, a protože se navíc měnila výška plátna (300 px proti
+   230 px), uskočil i celý obsah pod panely.
+   Graf proto začíná ve všech záložkách na STEJNÉM místě, má stejnou výšku
+   a patička má rezervovanou stejnou výšku (`min-height`), aby se nepohnul
+   ani obsah pod ní. Rezerva je `min-height`, ne pevná výška — kdyby text
+   potřeboval víc řádků, musí se roztáhnout, ne oříznout.
+
+   ⚠️ `display: flow-root` NENÍ kosmetika. Bez něj se `margin` vnitřních
+   odstavců slévá s okrajem patičky a uniká VEN — naměřeno v prohlížeči:
+   panely měly 330 / 332 / 334 px podle toho, kolik textu v patičce bylo,
+   takže se obsah pod grafy stejně hýbal o 4 px. `flow-root` marginy zadrží
+   uvnitř, a tím je výška všech panelů opravdu stejná.
+   Měří `kontrola-zalozky.html` a `tools/check-zalozky-browser.mjs`. */
+.pane-foot { min-height: 96px; display: flow-root; }
 
 /* ── přehrávač pod grafem ringu ── */
 .player {

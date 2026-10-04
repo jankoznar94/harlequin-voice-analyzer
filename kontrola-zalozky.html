@@ -22,8 +22,9 @@
   .chart-wrap { position:relative; margin:10px 0 4px; }
   .chart { width:100%; display:block; }
   .chart-head { position:absolute; inset:0; width:100%; height:230px; display:block; pointer-events:none; }
-  .chart-head.tall { height:300px; }
   .chart-pane { margin-top:10px; }
+  /* Stejná patička jako v aplikaci — rezervovaná výška, text pod grafem. */
+  .pane-foot { min-height:96px; }
   .hidden { display:none !important; }
   pre { white-space:pre-wrap; font-size:13px; }
 </style>
@@ -39,18 +40,21 @@
     <canvas id="c-spr" class="chart" height="230"></canvas>
     <canvas id="c-spr-head" class="chart-head" height="230"></canvas>
   </div>
+  <div class="pane-foot">legenda ringu</div>
 </div>
 <div id="pane-spec" class="chart-pane hidden">
   <div class="chart-wrap">
-    <canvas id="c-spec" class="chart tall" height="300"></canvas>
-    <canvas id="c-spec-head" class="chart-head tall" height="300"></canvas>
+    <canvas id="c-spec" class="chart" height="230"></canvas>
+    <canvas id="c-spec-head" class="chart-head" height="230"></canvas>
   </div>
+  <div class="pane-foot"></div>
 </div>
 <div id="pane-f1" class="chart-pane hidden">
   <div class="chart-wrap">
-    <canvas id="c-f1" class="chart" height="200"></canvas>
-    <canvas id="c-f1-head" class="chart-head" height="200"></canvas>
+    <canvas id="c-f1" class="chart" height="230"></canvas>
+    <canvas id="c-f1-head" class="chart-head" height="230"></canvas>
   </div>
+  <div class="pane-foot">vysvětlivka ladění</div>
 </div>
 
 <pre id="out">běží…</pre>
@@ -224,6 +228,51 @@ switchTo('f1');
      `pixel ${h3.x.toFixed(1)} vs ${gAfter.x(T).toFixed(1)}`);
   ok('klik po změně šířky pořád vrací 3 s', Math.abs(gAfter.timeAtX(gAfter.x(T)) - T) < 0.05,
      `${gAfter.timeAtX(gAfter.x(T)).toFixed(2)} s`);
+}
+
+/* ── 6. výška panelu: přepnutí záložky NESMÍ posunout obsah pod grafy ────
+ * Janova reálná stížnost: spektrogram byl vyšší (300 px) než graf ringu
+ * (230 px), takže při přepnutí záložky uskočil přehrávač i čas o 70 px nahoru
+ * a dolů. Měří se proto: (a) plátna začínají ve všech záložkách na stejném y
+ * a mají stejnou výšku, (b) prvek `#out` hned pod panely se nesmí pohnout. */
+{
+  const tops = {}, heights = {}, footNatural = {};
+  for (const which of ['spr', 'spec', 'f1']) {
+    switchTo(which);
+    const wrap = panes[which].querySelector('.chart-wrap');
+    const foot = panes[which].querySelector('.pane-foot');
+    heights[which] = wrap.getBoundingClientRect().height;
+    tops[which] = $('out').getBoundingClientRect().top;
+    // přirozená výška textu patičky (aby se dalo ověřit, že se neořezává)
+    const prevH = foot.style.height;
+    foot.style.height = 'auto';
+    footNatural[which] = foot.getBoundingClientRect().height;
+    foot.style.height = prevH;
+  }
+  ok('všechny panely mají stejnou výšku grafu',
+     Math.abs(heights.spr - heights.spec) < 1 && Math.abs(heights.spr - heights.f1) < 1,
+     `spr ${heights.spr}, spec ${heights.spec}, f1 ${heights.f1}`);
+  ok('obsah pod grafy se při přepnutí nepohne (přehrávač neposkakuje)',
+     Math.abs(tops.spr - tops.spec) < 1 && Math.abs(tops.spr - tops.f1) < 1,
+     `y = ${tops.spr} / ${tops.spec} / ${tops.f1}`);
+  ok('text patičky se vejde do rezervované výšky (nic se neořezává)',
+     Math.abs(footNatural.spr - footNatural.f1) < 1,
+     `přirozené výšky ${footNatural.spr} / ${footNatural.spec} / ${footNatural.f1}`);
+}
+
+/* ── 7. spektrogram už nekreslí textovou vysvětlivku o formantu ─────────── */
+{
+  switchTo('spec');
+  const cv = $('c-spec');
+  const img = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
+  // Popisek byl světle modrozelený (rgb ~180,220,220). Hledá se jen VYSOKÝ jas
+  // s modrozeleným nádechem — čárkované linky pásma jsou tmavší (~73,102,101),
+  // takže je práh 110 v červené vyřadí.
+  let light = 0;
+  for (let i = 0; i < img.length; i += 4) {
+    if (img[i] > 110 && img[i + 2] - img[i] > 15) light++;
+  }
+  ok('spektrogram nekreslí světlý popisek formantu', light < 40, `${light} px`);
 }
 
 $('out').textContent = log.join('\n') + '\nHOTOVO';

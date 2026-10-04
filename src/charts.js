@@ -54,6 +54,10 @@ function fmt(v, d = 1) {
 
 /* ─────────────────────────────────────────── SPR po tónech */
 
+/* Výšky všech tří panelů jsou STEJNÉ (`SPR_H` = `SPEC_H` = `F1_H` = 230 px).
+ * Různé výšky znamenaly, že přepnutí záložky posunulo celý obsah pod grafy
+ * (přehrávač i čas) svisle — spektrogram o 70 px, ladění o 30 px. Panel smí
+ * měnit jen obsah, ne výšku. Hlídá `test-ui-wiring.mjs` (sekce 10). */
 export const SPR_H = 230;
 const SPR_PAD = { l: 46, r: 12, t: 14, b: 34 };
 
@@ -88,7 +92,12 @@ export function sprNeededWidth(availW, notes, t1) {
   return Math.min(Math.ceil(w * 1.05), Math.max(availW, 4000));
 }
 
-export const SPEC_H = 300;
+/* Spektrogram má STEJNOU výšku jako graf ringu (SPR_H). Když byl vyšší
+ * (300 px), při přepnutí záložky se celý obsah pod grafy posunul o 70 px —
+ * přehrávač, čas i lišta „uskočily" vertikálně nahoru a dolů. Výška panelu
+ * proto musí být u všech záložek stejná; mění se jen to, co je uvnitř.
+ * Hlídá to `test-ui-wiring.mjs` i `kontrola-zalozky.html` v prohlížeči. */
+export const SPEC_H = 230;
 const SPEC_PAD = { l: 42, r: 12, t: 12, b: 26 };
 /**
  * Geometrie grafu ringu: rozsah os, měřítko času a převod kliku na čas.
@@ -350,7 +359,7 @@ function fmtClock(t) {
 
 /* ─────────────────────────────────────────── F1:F0 ladění */
 
-export const F1_H = 200;
+export const F1_H = 230;
 const F1_PAD = { l: 42, r: 12, t: 14, b: 30 };
 
 /**
@@ -586,8 +595,10 @@ export function drawSpec(canvas, samples, sampleRate, notes) {
     ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(padL + plotW, yy); ctx.stroke();
   }
   ctx.setLineDash([]);
-  ctx.fillStyle = 'rgba(180,220,220,.8)';
-  ctx.fillText("singer's formant 2,5–3,2 kHz", padL + plotW - 168, yFor(3200) - 5);
+  /* Textová vysvětlivka („singer's formant 2,5–3,2 kHz") se do plátna NEKRESLÍ
+   * — na výšku 230 px se pletla s popisky kmitočtové osy (2 000 a 3 000 Hz)
+   * a působila jako šum. Pásmo zpěváckého formantu zůstává vyznačené jen
+   * čárkovanými linkami; co znamenají, je v legendě aplikace. */
 
   // osy
   ctx.fillStyle = COL.text;
