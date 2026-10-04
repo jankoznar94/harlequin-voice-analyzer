@@ -11,6 +11,7 @@ import {
 } from './charts.js';
 import { initLive } from './live-ui.js';
 import { sniffSampleRate } from './sample-rate.js';
+import { newEtaState, etaStep, resetEta } from './progress.js';
 
 const $ = (id) => document.getElementById(id);
 const HIST_KEY = 'vocal-lab.history.v1';
@@ -324,7 +325,7 @@ function showProgress(p, msg, elapsedS = null) {
   $('panel-progress').classList.remove('hidden');
 
   const first = progAnim === null;
-  if (first) { progStart = performance.now(); progSoft = 0; progCeil = 0.05; }
+  if (first) { progStart = performance.now(); progSoft = 0; progCeil = 0.05; resetEta(etaState); }
   if (typeof p === 'number' && p >= progFrac) {
     progFrac = p;
     // strop pro měkkou hodnotu: kousek před dalším hlášením
@@ -342,7 +343,12 @@ function showProgress(p, msg, elapsedS = null) {
  * Měkce dorůstající pruh + odhad zbývajícího času.
  * Běží, dokud je panel průběhu viditelný — zastaví se sám, aby nic nežral
  * na pozadí.
+ *
+ * ODKAZ NA ZBYVAJÍCÍ ČAS: logika je v `progress.js` (musí být testovatelná
+ * bez prohlížeče) — tam je i vysvětlení, co bylo špatně. Tady se jen kreslí.
  */
+const etaState = newEtaState();
+
 function startProgAnim() {
   cancelAnimationFrame(progAnim);
   const step = () => {
@@ -353,15 +359,11 @@ function startProgAnim() {
     const shown = Math.max(progFrac, Math.min(progSoft, progCeil));
     $('prog-fill').style.width = (shown * 100).toFixed(1) + '%';
     $('prog-elapsed').textContent = 'Uběhlo ' + fmtDur(el);
-    /* Odhad zbývajícího času se ukáže až po pár sekundách a jen dokud neběží
-     * poslední fáze — z odhadu z prvních dvou procent by vyšel nesmysl
-     * (typicky „zbývá 40 minut") a v poslední fázi už je zbytečný. */
-    if (el > 3 && shown > 0.10 && progFrac < 0.9) {
-      const eta = el / shown - el;
-      $('prog-eta').textContent = ' · zbývá asi ' + fmtDur(eta);
-    } else {
-      $('prog-eta').textContent = '';
-    }
+    /* Odhad se neukazuje hned — dokud běží jen úvodní kontrola pásma, je
+     * z něj číslo, které se musí za pár sekund opravit (viz ETA_MIN_FRAC).
+     * Váhy přepočtu práce na čas jsou z měření; detaily v progress.js. */
+    const { eta, show } = etaStep(etaState, el, progFrac);
+    $('prog-eta').textContent = show ? ' · zbývá asi ' + fmtDur(eta) : '';
     progAnim = requestAnimationFrame(step);
   };
   progAnim = requestAnimationFrame(step);
@@ -370,7 +372,7 @@ function startProgAnim() {
 function hideProgress() {
   cancelAnimationFrame(progAnim);
   progAnim = null;
-  progFrac = 0; progSoft = 0;
+  progFrac = 0; progSoft = 0; resetEta(etaState);
   $('panel-progress').classList.add('hidden');
 }
 
