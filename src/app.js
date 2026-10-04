@@ -24,6 +24,18 @@ let player = null;       // { el, url, raf, loopNote, seeking }
 
 /* ═══════════════════════════════════════ nahrávání */
 
+function setRecording(on) {
+  /* ⚠️ Nahrávací lišta (#rec-bar) je v HTML MIMO #panel-input — proto ji
+   * skrytí panelu neodnese. Kdyby byla uvnitř, zmizela by i časomíra
+   * a tlačítko „Ukončit nahrávání", zatímco nahrávání běží dál; uživatel
+   * to vidí jako „Nahrávat nedělá nic". */
+  $('rec-bar').classList.toggle('hidden', !on);
+  // Akční tlačítka naopak patří do panelu — tam se schovají spolu s ním.
+  $('rec-actions').classList.toggle('hidden', on);
+  const b = $('btn-record');
+  if (b) b.disabled = on;      // druhé klepnutí by hlásilo falešnou chybu mikrofonu
+}
+
 async function startRecord() {
   try {
     recStream = await navigator.mediaDevices.getUserMedia({
@@ -71,7 +83,7 @@ async function startRecord() {
   }, 250);
 
   $('panel-input').classList.add('hidden');
-  $('rec-bar').classList.remove('hidden');
+  setRecording(true);
 }
 
 function pickMime() {
@@ -91,7 +103,7 @@ async function finishRecord() {
   cancelAnimationFrame(levelRaf);
   if (recStream) recStream.getTracks().forEach(t => t.stop());
   if (audioCtx) audioCtx.close().catch(() => {});
-  $('rec-bar').classList.add('hidden');
+  setRecording(false);
 
   const blob = new Blob(recChunks, { type: recorder?.mimeType || 'audio/webm' });
   const secs = Math.round((Date.now() - recStart) / 1000);
