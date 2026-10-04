@@ -88,6 +88,11 @@ export function installAppEnv(opts = {}) {
     classList: { add() {}, remove() {}, contains: () => false, toggle() {} },
     append() {}, appendChild() {}, remove() {},
     setAttribute() {}, getAttribute: () => null,
+    /* `click()` musí existovat — `download()` v app.js ho volá na vytvořeném
+     * <a>. Bez něj spadne celé stahování reportu na „a.click is not a function",
+     * což vypadá jako chyba kódu, ale je to chyba mocku: skutečný DOM ten
+     * element metodu MÁ. Mock bez ní test zneplatní (a přesně to se stalo). */
+    click() { if (typeof this.onclick === 'function') this.onclick(); },
     querySelector: () => makeEl('child'), querySelectorAll: () => [],
     addEventListener() {}, removeEventListener() {},
     getContext: () => ctx2d(),

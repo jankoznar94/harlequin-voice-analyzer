@@ -426,7 +426,28 @@ function showResult(res, samples, sampleRate, label, secs, blob) {
       'Síla je pod tím, co literatura měří i u nezpěváků. Bývá to malá hlasitost ' +
       'nebo mikrofon daleko od úst — zkontroluj vzdálenost, než začneš soudit hlas.'],
   }[s.level] || ['—', 'none', ''];
-  setKpi('k-level', lvl[0], `SPR ${fmt(s.spr_median, 1)} dB (medián)`, lvl[1], 'k-level-d', lvl[2]);
+
+  /* Dvě čísla VEDLE sebe, ne jedno místo druhého.
+   *
+   * PROČ: „Síla hlasu" je JEDINÉ místo v aplikaci, které srovnává s literaturou
+   * (Omori 1996: nezpěváci −22,7, profesionálové −13,1 dB). Jenže Omoriho čísla
+   * vznikla měřením, které vibrato rozmazává stejně jako naše STARÉ měření
+   * (průměr spekter přes tón). Nové měření (po rámcích, horní percentil) vibrato
+   * nepodhodnocuje — naměřeno na Janově nahrávce +4,5 dB. Kdybychom jím staré
+   * číslo nahradili, člověk se ocitne nad profesionálním pásmem jen proto, že
+   * jsme vyměnili měřidlo, ne protože by zpíval líp. Proto se ukazují obě:
+   * srovnatelné s literaturou (staré) a přesné (nové), s přiznaným rozdílem. */
+  const novy = s.spr_novy_median;
+  const maNove = typeof novy === 'number' && Number.isFinite(novy);
+  const detail = maNove
+    ? `Srovnatelné s literaturou ${fmt(s.spr_median, 1)} dB · přesné číslo ${fmt(novy, 1)} dB`
+    : `SPR ${fmt(s.spr_median, 1)} dB (medián)`;
+  const vysvetleni = maNove
+    ? lvl[2] + ` Dvě čísla se liší o ${fmt(novy - s.spr_median, 1)} dB proto, že vibrato ` +
+      'staršímu měření vrchol rozmazává dolů. Pro srovnání s literaturou platí to první, ' +
+      'druhé je blíž skutečnosti.'
+    : lvl[2];
+  setKpi('k-level', lvl[0], detail, lvl[1], 'k-level-d', vysvetleni);
 
   /* ── ukazatel 2b: barva hlasu (FHE) ────────────────────────────────── */
   setFheKpi(res.fach, s.fhe_median);
@@ -681,6 +702,7 @@ function addToHistory() {
     spr_unusable: !!s.spr_unusable,
     reason: s.reason || null,
     spr_median: s.spr_median ?? null,
+    spr_novy_median: s.spr_novy_median ?? null,
     spr_sd: s.spr_sd ?? null,
     ring_pct: s.ring_consistency_pct ?? null,
     fhe: s.fhe_median ?? null,
@@ -711,6 +733,7 @@ function addLiveToHistory(s) {
     spr_unusable: !Number.isFinite(s.sprMedian),
     reason: Number.isFinite(s.sprMedian) ? null : 'málo zpívaných rámců',
     spr_median: Number.isFinite(s.sprMedian) ? s.sprMedian : null,
+    spr_novy_median: null,     // živý režim nové měření nepočítá — je na celý tón
     spr_sd: Number.isFinite(s.centsSpread) ? s.centsSpread : null,
     ring_pct: null,
     fhe: Number.isFinite(s.fheMedian) ? s.fheMedian : null,
@@ -1174,6 +1197,15 @@ function makeMarkdown() {
       `(${s.ring_consistency_pct.toFixed(1)} %) — na kolika tónech se barva neláme`);
     L.push(`- Síla hlasu (proti literatuře): **${s.level}**, SPR medián **${fmt(s.spr_median, 2)} dB** ` +
       `(${s.pct_above_ref.toFixed(0)} % tónů nad ${s.ref_threshold} dB)`);
+    /* Druhé číslo vedle prvního — staré je srovnatelné s literaturou, nové je
+     * přesnější. Kdyby tu bylo jen nové, ztratí se vazba na Omoriho hodnoty;
+     * kdyby jen staré, je číslo systematicky nižší, než hlas ve skutečnosti je. */
+    if (Number.isFinite(s.spr_novy_median)) {
+      L.push(`- Přesné SPR (po rámcích, 90. percentil): **${fmt(s.spr_novy_median, 2)} dB** ` +
+        `— o ${fmt(s.spr_novy_median - s.spr_median, 1)} dB výš. Starší měření (průměr spekter ` +
+        'přes tón) podhodnocuje, protože vibrato vrchol v pásmu 2–4 kHz rozmazává. ' +
+        'Pro srovnání s literaturou platí hodnota výše, tahle je blíž skutečnosti.');
+    }
     L.push(`- Rozptyl ± ${fmt(s.spr_sd, 2)} dB, rozsah ${fmt(s.spr_min, 1)} až ${fmt(s.spr_max, 1)} dB`);
     L.push(`- Práh výpadku ${fmt(s.ring_threshold, 1)} dB (${s.threshold_method})`);
     if (s.dropouts.length) {
@@ -1181,7 +1213,11 @@ function makeMarkdown() {
       L.push(`- **Výpadky (${s.dropouts.length}): ${list}**`);
     } else L.push('- Beze výpadků.');
     L.push(`- FHE (barva hlasu): ${s.fhe_median ? Math.round(s.fhe_median) : '—'} Hz`);
-    if (s.fhe_median && res.fach === 'tenor' && s.fhe_median < 2480) {
+    /* POZOR: `res` v této funkci NEEXISTUJE — výsledek je `r` (viz výše
+     * `const r = current.result`). `res.fach` tu byl a shazoval celé stahování
+     * reportu na `ReferenceError`; statická kontrola propojení to nemůže
+     * odhalit, protože se to projeví až za běhu v prohlížeči. */
+    if (s.fhe_median && r.fach === 'tenor' && s.fhe_median < 2480) {
       L.push('  (Pozor: referenční hodnota pro tenor je 2705 ± 221 Hz. Nižší ' +
         'naměřená hodnota u nahrávky v nízké — např. baritonové — poloze není ' +
         'vada hlasu, jen se na tóny v této poloze reference nevztahuje.)');

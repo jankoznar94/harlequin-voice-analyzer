@@ -130,6 +130,42 @@ check('ukazatel se vykreslil bez chyby', errors.length === 0);
     `currentTime=${au.currentTime.toFixed(2)} s`);
 }
 
+/* ── tlačítka exportu musí opravdu něco vyrobit ─────────────────────────── */
+/*
+ * PROČ ZVLÁŠŤ (reálná chyba, která se dostala až k uživateli):
+ * „Stáhnout report" padalo na `ReferenceError: res is not defined` uvnitř
+ * `makeMarkdown()`. Statická kontrola propojení to vidět nemůže (jde o
+ * proměnnou mimo dosah) a cesta „soubor → analýza → přehrávač" tlačítko
+ * nezmáčkne — chyba se proto projevila JEN v prohlížeči, po kliknutí.
+ * Proto se tu každé exportní tlačítko zmáčkne a ověří se, že vyrobilo soubor
+ * a nevyhodilo chybu.
+ */
+{
+  const before = errors.length;
+  const mdBefore = objectUrls.length;
+  /* Volání v try/catch: chyba uvnitř `onclick` se jinak vyhodí z testu a ten
+   * spadne bez hlášení — vypadá to jako rozbitý test, ne jako nalezená vada.
+   * (Ověřeno mutací: se `res.fach` zpět test skutečně spadne.) */
+  let chyba = null;
+  try { el('btn-md').onclick(); } catch (e) { chyba = e; }
+  await sleep(40);
+  check('„Stáhnout report" vyrobí soubor bez chyby',
+    !chyba && errors.length === before && objectUrls.length > mdBefore,
+    chyba ? `${chyba.name}: ${chyba.message}`
+      : errors.length > before ? `${errors[before].name}: ${errors[before].message}`
+        : `URL: ${objectUrls.length - mdBefore}`);
+
+  const jsonBefore = objectUrls.length;
+  let chyba2 = null;
+  try { el('btn-json').onclick(); } catch (e) { chyba2 = e; }
+  await sleep(40);
+  check('„Stáhnout JSON" vyrobí soubor bez chyby',
+    !chyba2 && errors.length === before && objectUrls.length > jsonBefore,
+    chyba2 ? `${chyba2.name}: ${chyba2.message}`
+      : errors.length > before ? `${errors[before].name}: ${errors[before].message}`
+        : `URL: ${objectUrls.length - jsonBefore}`);
+}
+
 /* ── nové měření uklidí přehrávač ──────────────────────────────────────── */
 
 {
