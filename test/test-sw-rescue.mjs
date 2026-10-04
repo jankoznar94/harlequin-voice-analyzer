@@ -188,13 +188,24 @@ console.log('\n═══ Service worker: navigace ze sítě, assety z cache ═�
 console.log('\n═══ Service worker: úklid a ruční aktualizace ═══\n');
 
 {
-  const sw = runSW({ cacheNames: ['vocal-lab-v5', 'vocal-lab-v21', 'vocal-lab-v22'] });
+  /* Verze cache se bere ze SKUTEČNÉHO sw.js — jinak test selže při každém
+   * bumpnutí cache, i když je kód v pořádku (přesně to se stalo: test měl
+   * natvrdo v22, po bumpu na v24 hlásil „aktivace nesmazala staré cache“).
+   * Test, který si verzi opíše ručně, hlídá datum, ne chování. */
+  const curCache = (SW_SRC.match(/const CACHE = '([^']+)'/) || [])[1];
+  const stale = ['vocal-lab-v5', 'vocal-lab-v21', 'vocal-lab-v22', 'vocal-lab-v23']
+    .filter(n => n !== curCache);
+  /* Aktuální cache se do stavu PŘIDÁ: v běžícím prohlížeči ji před aktivací
+   * vytvořil `install` (`cache.addAll(ASSETS)`), kdežto `activate` sám žádnou
+   * nevytváří — jen maže cizí. Kdyby v mocku chyběla, zůstane po aktivaci
+   * prázdno a test hlásí „nesmazal staré“, i když kód maže správně. */
+  const sw = runSW({ cacheNames: [...stale, curCache] });
   await sw.fire('activate', {});
   /* Aktuální cache musí ZŮSTAT (bez ní by offline režim neměl odkud vzít
    * soubory), staré se smažou — jinak by zařízení drželo i obsah z v1–v5. */
   const left = [...sw.cacheNames];
   check('aktivace smaže staré cache a aktuální nechá',
-    left.length === 1 && left[0] === 'vocal-lab-v22', left.join(', ') || 'žádné');
+    left.length === 1 && left[0] === curCache, left.join(', ') || 'žádné');
   check('aktivace převezme kontrolu nad stránkou', sw.claims.length === 1);
 }
 {
