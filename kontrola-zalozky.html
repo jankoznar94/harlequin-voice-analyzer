@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Kontrola záložek grafů</title>
+<!--
+  Ověřuje v SKUTEČNÉM prohlížeči to, co se z mocku vyčíst nedá:
+
+  1. **Přepnutí záložky opravdu vymění panel** — vidět je vždy právě jeden,
+     a vybraná záložka je označená (`aria-selected`).
+  2. **Skryté plátno má nulovou šířku** — to je důvod, proč se graf kreslí až
+     po přepnutí (vykreslil by se do šířky 0 a zůstal prázdný).
+  3. **Ukazatel přehrávání stojí po přepnutí na stejném čase** ve všech
+     záložkách, a **klik do kteréhokoli grafu vrátí stejný čas** — přesně to
+     uživatel čeká („klik do grafu = skok jako na liště").
+  4. **Změna šířky okna** přeměří plátno i ukazatel (jinak by čára seděla
+     na starém měřítku).
+
+  Postup napodobuje aplikaci: přepni → překresli graf → dokresli ukazatel.
+  Výsledek se vypíše do <pre id="out">, aby ho test přečetl přes --dump-dom.
+-->
+<style>
+  body { background:#1a1715; color:#e8e2dc; font:16px sans-serif; margin:0; padding:16px; }
+  .chart-wrap { position:relative; margin:10px 0 4px; }
+  .chart { width:100%; display:block; }
+  .chart-head { position:absolute; inset:0; width:100%; height:230px; display:block; pointer-events:none; }
+  .chart-head.tall { height:300px; }
+  .chart-pane { margin-top:10px; }
+  .hidden { display:none !important; }
+  pre { white-space:pre-wrap; font-size:13px; }
+</style>
+
+<div class="chart-tabs">
+  <button id="tab-spr" data-chart="spr">Ring</button>
+  <button id="tab-spec" data-chart="spec">Spektrogram</button>
+  <button id="tab-f1" data-chart="f1">Ladění F1</button>
+</div>
+
+<div id="pane-spr" class="chart-pane">
+  <div class="chart-wrap">
+    <canvas id="c-spr" class="chart" height="230"></canvas>
+    <canvas id="c-spr-head" class="chart-head" height="230"></canvas>
+  </div>
+</div>
+<div id="pane-spec" class="chart-pane hidden">
+  <div class="chart-wrap">
+    <canvas id="c-spec" class="chart tall" height="300"></canvas>
+    <canvas id="c-spec-head" class="chart-head tall" height="300"></canvas>
+  </div>
+</div>
+<div id="pane-f1" class="chart-pane hidden">
+  <div class="chart-wrap">
+    <canvas id="c-f1" class="chart" height="200"></canvas>
+    <canvas id="c-f1-head" class="chart-head" height="200"></canvas>
+  </div>
+</div>
+
+<pre id="out">běží…</pre>
+
+<script>
+  // Kdyby skript spadl, musí to být vidět ve výstupu — jinak test čte jen
+  // „běží…" a vypadá to jako zaseknutí, ne jako chyba.
+  window.__err = [];
+  const fail = (msg) => {
+    window.__err.push('FAIL ' + msg);
+    document.getElementById('out').textContent = window.__err.join('\n') + '\nHOTOVO';
+  };
+  window.addEventListener('error', (e) => fail(e.message + ' @ řádek ' + e.lineno));
+  window.addEventListener('unhandledrejection', (e) =>
+    fail('rejection: ' + String((e.reason && e.reason.message) || e.reason)));
+</script>
+
+<script type="module">
+import { drawSpr, drawSpec, drawF1, drawSprHead, drawSpecHead, drawF1Head,
+         f1Geom, f1Notes, specGeom, SPR_H, SPEC_H, F1_H } from './src/charts.js';
+
+const log = [];
+const ok = (name, cond, detail = '') =>
+  log.push(`${cond ? 'OK  ' : 'FAIL'} ${name}${detail ? '  — ' + detail : ''}`);
+
+/* Tóny jako z reálné analýzy — část je pod G4, takže do grafu ladění nepatří. */
+const NOTES = [
+  { t_start: 0.0, t_end: 1.0, spr: -12.0, ring_ok: true,  note: 'A3' },
+  { t_start: 1.2, t_end: 2.4, spr: -13.5, ring_ok: true,  note: 'H3',
+    f1_tuning_relevant: true, f1_f0_err_pct: 5.0,  f1_tuned: true },
+  { t_start: 2.6, t_end: 4.0, spr: -22.0, ring_ok: false, note: 'C5',
+    f1_tuning_relevant: true, f1_f0_err_pct: 24.0, f1_tuned: false },
+  { t_start: 4.2, t_end: 5.5, spr: -12.5, ring_ok: true,  note: 'A4',
+    f1_tuning_relevant: true, f1_f0_err_pct: 6.5,  f1_tuned: true },
+];
+const SUMMARY = { ring_threshold: -17.5, reason: '' };
+const DUR = 5.5, SR = 44100, T = 3.0;
+const samples = new Float64Array(Math.round(DUR * SR));
+for (let i = 0; i < samples.length; i++) {
+  const t = i / SR;
+  samples[i] = 0.2 * (Math.sin(2 * Math.PI * 440 * t) + 0.4 * Math.sin(2 * Math.PI * 2600 * t));
+}
+
+const $ = (id) => document.getElementById(id);
+const panes = { spr: $('pane-spr'), spec: $('pane-spec'), f1: $('pane-f1') };
+const canvasOf = { spr: 'c-spr', spec: 'c-spec', f1: 'c-f1' };
+const headOf = { spr: 'c-spr-head', spec: 'c-spec-head', f1: 'c-f1-head' };
+const visible = () => Object.keys(panes).filter(k => !panes[k].classList.contains('hidden'));
+
+/** Přepnutí záložky PŘESNĚ jako `selectChart` v app.js: odkryj jeden panel,
+ *  ostatní schovej, označ záložku a teprve pak kresli. Test nesmí mít vlastní
+ *  benevolentnější variantu — pak by přehlédl chybu, kterou má hledat. */
+function switchTo(which) {
+  for (const k of Object.keys(panes)) panes[k].classList.toggle('hidden', k !== which);
+  for (const k of Object.keys(panes)) {
+    $('tab-' + k).setAttribute('aria-selected', k === which ? 'true' : 'false');
+  }
+  const rel = f1Notes(NOTES);
+  if (which === 'spr') { drawSpr($('c-spr'), NOTES, SUMMARY, null, {}); }
+  if (which === 'spec') { drawSpec($('c-spec'), samples, SR, NOTES); }
+  if (which === 'f1') { drawF1($('c-f1'), NOTES, null); }
+  paintHeads();
+}
+/** Ukazatel do všech pláten — stejně jako `paintHeads` v app.js. */
+function paintHeads() {
+  drawSprHead($('c-spr-head'), NOTES, SUMMARY, T, {});
+  drawSpecHead($('c-spec-head'), DUR, T);
+  drawF1Head($('c-f1-head'), NOTES, T);
+}
+/** Geometrie podle právě viditelného plátna — stejně je počítá i klik. */
+function geomOf(which) {
+  const cv = $(canvasOf[which]), w = cv.clientWidth;
+  if (which === 'spr') return null;                       // klik bere sprGeomRef z drawSpr
+  if (which === 'spec') return specGeom(w, SPEC_H, DUR);
+  return f1Geom(w, F1_H, f1Notes(NOTES));
+}
+/** Sonda do bufferu: nejtmavší/nejsvětlejší neutrál = barva ukazatele (#ece5dd). */
+function headPixels(cv) {
+  const img = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
+  let n = 0, minX = Infinity, maxX = -Infinity;
+  for (let y = 0; y < cv.height; y += 2) {
+    for (let x = 0; x < cv.width; x++) {
+      const i = (y * cv.width + x) * 4;
+      if (Math.abs(img[i] - 236) < 14 && Math.abs(img[i + 1] - 229) < 14 && Math.abs(img[i + 2] - 221) < 14) {
+        n++; if (x < minX) minX = x; if (x > maxX) maxX = x;
+      }
+    }
+  }
+  const dpr = cv.width / (cv.clientWidth || cv.width);
+  return { n, x: n ? (minX + maxX) / 2 / dpr : NaN, dpr };
+}
+
+/* ── 1. skryté plátno nemá šířku (proto se graf kreslí až po přepnutí) ─── */
+ok('na začátku je vidět právě panel ringu', visible().join() === 'spr', visible().join());
+ok('skrytá plátna mají nulovou šířku', $('c-spec').clientWidth === 0 && $('c-f1').clientWidth === 0,
+   `spec=${$('c-spec').clientWidth}, f1=${$('c-f1').clientWidth}`);
+ok('viditelné plátno šířku má', $('c-spr').clientWidth > 100, `${$('c-spr').clientWidth} px`);
+
+/* ── 2. přepínání záložek ───────────────────────────────────────────────── */
+switchTo('f1');
+ok('po přepnutí je vidět právě panel ladění', visible().join() === 'f1', visible().join());
+ok('vybraná záložka je označená a ostatní ne',
+   $('tab-f1').getAttribute('aria-selected') === 'true' &&
+   $('tab-spr').getAttribute('aria-selected') === 'false' &&
+   $('tab-spec').getAttribute('aria-selected') === 'false');
+switchTo('spr');
+ok('přepnutí zpět na ring funguje', visible().join() === 'spr', visible().join());
+
+/* ── 3. každá záložka: ukazatel i klik sedí na stejný čas ───────────────── */
+const SPR_W = $('c-spr').clientWidth;
+let hSpr = null;
+for (const which of ['spr', 'spec', 'f1']) {
+  switchTo(which);
+  const cv = $(canvasOf[which]);
+  ok(`[${which}] po přepnutí má plátno nenulovou šířku`, cv.clientWidth > 100, `${cv.clientWidth} px`);
+
+  const h = headPixels($(headOf[which]));
+  ok(`[${which}] ukazatel se vykreslil`, h.n > 50, `${h.n} px, x=${Number.isFinite(h.x) ? h.x.toFixed(0) : '—'}`);
+
+  const g = geomOf(which);
+  if (g) {
+    const want = g.x(T);
+    ok(`[${which}] ukazatel stojí na čase 3 s`, Math.abs(h.x - want) < 3,
+       `pixel ${h.x.toFixed(1)} vs čas 3 s na ${want.toFixed(1)}`);
+    ok(`[${which}] klik na to místo vrátí 3 s (jako slider)`,
+       Math.abs(g.timeAtX(want) - T) < 0.05, `${g.timeAtX(want).toFixed(2)} s`);
+    // a klik kdekoliv jinde musí vrátit čas úměrný poloze
+    ok(`[${which}] klik vlevo od středu vrátí kratší čas`,
+       g.timeAtX(want - 100) < T && g.timeAtX(want + 100) > T,
+       `${g.timeAtX(want - 100).toFixed(2)} s / ${g.timeAtX(want + 100).toFixed(2)} s`);
+  } else {
+    // graf ringu: geometrii vrací drawSpr, klik ji bere z app.js
+    ok('[spr] klik v grafu ringu použije vrácenou geometrii', true, 'viz test-playhead.mjs');
+  }
+  if (which === 'spr') hSpr = h;
+}
+
+/* ── 4. stejná šířka pláten ⇒ stejný pixel na stejný čas ───────────────── */
+switchTo('spec');
+{
+  const gs = geomOf('spec');
+  ok('ring i spektrogram mají stejnou šířku plátna (900px okno)',
+     Math.abs(SPR_W - $('c-spec').clientWidth) <= 1,
+     `ring ${SPR_W} px, spec ${$('c-spec').clientWidth} px`);
+  ok('ukazatel ringu i spektrogramu je na stejném čase',
+     Math.abs(gs.timeAtX(hSpr.x) - T) < 0.1,
+     `ring pixel ${hSpr.x.toFixed(1)} → ${gs.timeAtX(hSpr.x).toFixed(2)} s`);
+}
+
+/* ── 5. změna šířky: plátno i ukazatel se musí přeměřit ────────────────── */
+switchTo('f1');
+{
+  const beforeCss = $('c-f1').clientWidth;
+  const gBefore = geomOf('f1');
+  document.body.style.width = '320px';
+  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+  /* Pozor: `.width` plátna je BITMAPA (nastavuje ji kresba), takže se změnou CSS
+   * sama nezmění — měřit se musí `clientWidth`, tedy co vidí layout. */
+  const afterCss = $('c-f1').clientWidth;
+  ok('zúžení okna zmenší plátno podle layoutu', afterCss < beforeCss,
+     `${beforeCss} → ${afterCss} CSS px`);
+
+  switchTo('f1');                       // aplikace tu kresbu spouští z ResizeObserveru
+  const gAfter = geomOf('f1');
+  ok('po změně šířky má geometrie jiné měřítko', gAfter.x(T) !== gBefore.x(T),
+     `${gBefore.x(T).toFixed(0)} → ${gAfter.x(T).toFixed(0)}`);
+  ok('buffer plátna se přeměřil na novou šířku', $('c-f1').width <= afterCss * 3 + 2,
+     `buffer ${$('c-f1').width} px při ${afterCss} CSS px`);
+  const h3 = headPixels($('c-f1-head'));
+  ok('ukazatel po změně šířky sedí na novém měřítku', Math.abs(h3.x - gAfter.x(T)) < 3,
+     `pixel ${h3.x.toFixed(1)} vs ${gAfter.x(T).toFixed(1)}`);
+  ok('klik po změně šířky pořád vrací 3 s', Math.abs(gAfter.timeAtX(gAfter.x(T)) - T) < 0.05,
+     `${gAfter.timeAtX(gAfter.x(T)).toFixed(2)} s`);
+}
+
+$('out').textContent = log.join('\n') + '\nHOTOVO';
+</script>

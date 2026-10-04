@@ -350,32 +350,75 @@ function fmtClock(t) {
 
 /* ─────────────────────────────────────────── F1:F0 ladění */
 
-export function drawF1(canvas, notes, hintEl) {
-  const H = 200;
-  const { ctx, w, h } = setup(canvas, H);
-  const padL = 42, padR = 12, padT = 14, padB = 30;
-  const plotW = w - padL - padR, plotH = h - padT - padB;
+export const F1_H = 200;
+const F1_PAD = { l: 42, r: 12, t: 14, b: 30 };
 
-  const rel = notes.filter(n => n.f1_tuning_relevant && n.f1_f0_err_pct === n.f1_f0_err_pct);
+/**
+ * Tóny, které graf ladění opravdu kreslí — hodnotí se jen od G4 výš.
+ * Je to na JEDNOM místě schválně: kresba, ukazatel i klik musí vidět stejnou
+ * množinu, jinak se rozjedou indexy a ukazatel stojí na jiném sloupci.
+ */
+export function f1Notes(notes) {
+  return (notes || []).filter(n => n.f1_tuning_relevant && n.f1_f0_err_pct === n.f1_f0_err_pct);
+}
+
+/**
+ * Geometrie grafu ladění (vysoké tóny) + převod ukazatele přehrávání.
+ *
+ * Osa X je ČAS nahrávky, stejně jako u grafu ringu a spektrogramu — jen tak
+ * může ukazatel přehrávání běžet plynule i tady a klik trefit přesné místo.
+ * Sloupec stojí na svém tónu a je široký jako tón; krátký tón má nejméně 3 px,
+ * aby nezmizel (jinak by graf tvrdil, že tam žádný tón není).
+ */
+export function f1Geom(w, h, rel) {
+  const plotW = w - F1_PAD.l - F1_PAD.r, plotH = h - F1_PAD.t - F1_PAD.b;
+  if (!rel || !rel.length || !(plotW > 0) || !(plotH > 0)) return null;
+  // Osa X je ČAS nahrávky — stejně jako u grafu ringu a spektrogramu. Ukazatel
+  // proto jede plynule i tady a klik míří na přesné místo v nahrávce.
+  const t1 = Math.max(...rel.map(n => Math.max(n.t_end, n.t_start)), 0.001);
+  const x = (t) => F1_PAD.l + (Math.max(0, Math.min(t, t1)) / t1) * plotW;
+  return {
+    w, h, padL: F1_PAD.l, padR: F1_PAD.r, padT: F1_PAD.t, padB: F1_PAD.b,
+    plotW, plotH, rel, t1, x,
+    timeAtX: (px) => ((px - F1_PAD.l) / plotW) * t1,
+  };
+}
+
+/** Ukazatel přes graf ladění — světlá čára na tónu, který právě zní. */
+export function drawF1Head(canvas, notes, t) {
+  const rel = f1Notes(notes);
+  const { ctx, w, h } = setupOverlay(canvas, F1_H);
+  const g = f1Geom(w, h, rel);
+  if (!g) return;
+  drawPlayhead(ctx, g, t);
+}
+
+export function drawF1(canvas, notes, hintEl) {
+  const { ctx, w, h } = setup(canvas, F1_H);
+  const g = f1Geom(w, h, f1Notes(notes));
+  if (!g) {
+    const padL = F1_PAD.l;
+    const nBelow = notes.length;
+    if (hintEl) {
+      hintEl.textContent = 'V této nahrávce není žádný tón od G4 výš, takže ladění F1 ' +
+        'nelze hodnotit. Nad G4 se teprve pozná, kde se formant rozpadá.' +
+        (nBelow ? ` (${nBelow} tónů je níž — tam se nehodnotí.)` : '');
+    }
+    ctx.fillStyle = COL.textDim;
+    ctx.fillText('Žádný tón od G4 výš — nelze hodnotit', padL, h / 2);
+    return null;
+  }
+  const { padL, padR, padT, padB, plotW, plotH, rel } = g;
   const nBelow = notes.length - rel.length;
 
   if (hintEl) {
-    hintEl.textContent = rel.length
-      ? `Hodnoceno ${rel.length} tónů od G4 výš. ${nBelow} tónů níž se nehodnotí — ` +
-        'tam je první formant záměrně vysoko (jiná strategie, ne vada).'
-      : 'V této nahrávce není žádný tón od G4 výš, takže ladění F1 nelze hodnotit. ' +
-        'Nad G4 se teprve pozná, kde se formant rozpadá.';
-  }
-  if (!rel.length) {
-    ctx.fillStyle = COL.textDim;
-    ctx.fillText('Žádný tón od G4 výš — nelze hodnotit', padL, h / 2);
-    return;
+    hintEl.textContent = `Hodnoceno ${rel.length} tónů od G4 výš. ${nBelow} tónů níž se nehodnotí — ` +
+      'tam je první formant záměrně vysoko (jiná strategie, ne vada).';
   }
 
   const maxV = Math.max(20, ...rel.map(n => Math.min(n.f1_f0_err_pct, 60)));
   const y = (v) => padT + plotH - (v / maxV) * plotH;
-  const x = (i) => padL + (rel.length <= 1 ? plotW / 2
-    : (i / (rel.length - 1)) * plotW);
+  const x = (t) => g.x(t);
 
   // Pásma barvou: zelené = v toleranci (ladění drží), oranžové = ještě
   // snesitelné, červené = rozpadá se. Bez toho laik z čísel nepozná, která
@@ -410,18 +453,35 @@ export function drawF1(canvas, notes, hintEl) {
   ctx.fillStyle = COL.textDim;
   ctx.fillText('nad touto čarou se ladění rozpadá (8 %)', padL + 2, yt - 4);
 
-  const bw = Math.max(3, Math.min(18, plotW / Math.max(1, rel.length) * 0.7));
-  rel.forEach((n, i) => {
+  // Čas na ose X — stejně jako u grafu ringu. Bez toho by se z časové osy
+  // nedalo přečíst, kde v nahrávce ten který tón je.
+  ctx.fillStyle = COL.textDim;
+  for (const tv of niceTicks(0, g.t1, 6).filter(v => v > 0)) {
+    const xx = Math.round(x(tv));
+    if (xx < padL || xx > w - padR) continue;
+    ctx.fillText(fmtClock(tv), xx - 12, h - 4);
+  }
+
+  /* Sloupce stojí na SVÉM TÓNU (osa X je čas) a začínají přesně na jeho začátku
+   * — vycentrování by posunulo hodnotu mimo čas, který tón opravdu zabírá.
+   * Šířka je z délky tónu, ale nejméně 3 px (jinak by krátký tón zmizel a graf
+   * by tvrdil, že tam žádný není) a nejvýš 18 px (aby dlouhý tón nezakryl okolí).
+   * Mezera mezi tóny zůstane prázdná — je vidět, že mezi nimi nic neznělo. */
+  const bwLimit = Math.max(3, Math.min(18, plotW / Math.max(1, rel.length) * 0.6));
+  rel.forEach((n) => {
     const v = Math.min(n.f1_f0_err_pct, 60);
+    const xa = x(n.t_start), xb = x(Math.max(n.t_end, n.t_start));
+    const bw = Math.max(3, Math.min(bwLimit, Math.max(3, xb - xa)));
     ctx.fillStyle = n.f1_tuned ? COL.ok : COL.bad;
-    ctx.fillRect(x(i) - bw / 2, y(v), bw, padT + plotH - y(v));
+    ctx.fillRect(xa, y(v), bw, padT + plotH - y(v));
     ctx.save();
-    ctx.translate(x(i), h - padB + 12);
+    ctx.translate(xa + Math.min(bw, 10) / 2, h - padB + 12);
     ctx.rotate(-Math.PI / 4);
     ctx.fillStyle = COL.textDim;
     ctx.fillText(n.note, 0, 0);
     ctx.restore();
   });
+  return g;
 }
 
 /* ─────────────────────────────────────────── Spektrogram */

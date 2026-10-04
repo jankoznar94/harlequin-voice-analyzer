@@ -26,7 +26,8 @@ globalThis.document = {
 };
 
 const mod = await import('../src/charts.js');
-const { sprGeom, specGeom, drawSpr, drawPlayhead, drawSprHead, drawSpecHead, clearHead } = mod;
+const { sprGeom, specGeom, drawSpr, drawPlayhead, drawSprHead, drawSpecHead,
+        clearHead, f1Geom, f1Notes, drawF1Head, drawF1 } = mod;
 
 let pass = 0, fail = 0;
 const check = (name, ok, detail = '') => {
@@ -69,6 +70,19 @@ const NOTES = [
 ];
 const SUMMARY = { ring_threshold: -17.5, reason: '' };
 const W = 800, H = 230;
+
+/* ── tóny pro graf ladění ────────────────────────────────────────────────
+ * Graf ladění kreslí jen tóny od G4 výš, ale jeho osa X je ČAS — stejně jako
+ * u grafu ringu a spektrogramu. Testy níž hlídají právě to: že ukazatel jede
+ * plynule po čase a klik trefí přesné místo, ne že „stojí na tónu".
+ */
+const F1_NOTES = [
+  { t_start: 0.0, t_end: 1.0, f1_tuning_relevant: true, f1_f0_err_pct: 4.0, f1_tuned: true, note: 'A4' },
+  { t_start: 1.2, t_end: 2.4, f1_tuning_relevant: true, f1_f0_err_pct: 12.0, f1_tuned: false, note: 'H4' },
+  { t_start: 2.6, t_end: 4.0, f1_tuning_relevant: true, f1_f0_err_pct: 30.0, f1_tuned: false, note: 'C5' },
+  { t_start: 4.2, t_end: 5.5, f1_tuning_relevant: false, f1_f0_err_pct: NaN, note: 'A3' },   // pod G4 — nekreslí se
+  { t_start: 5.7, t_end: 9.0, f1_tuning_relevant: true, f1_f0_err_pct: 6.0, f1_tuned: true, note: 'D5' },
+];
 
 console.log('\n═══ Geometrie grafu ringu ═══\n');
 
@@ -245,6 +259,72 @@ console.log('\n═══ Barvy sloupců: výpadek ≠ vyřazený tón ═══\
   const bars = (ops.fillsStyle || []).filter(f => f.w <= 18 && f.h > 0);
   check('skutečný výpadek ringu se pořád kreslí červeně',
     bars.some(f => f.style === '#b5675e'), bars.map(f => f.style).join(' '));
+}
+
+console.log('\n═══ Graf ladění: osa je čas, ukazatel i klik sedí na tón ═══\n');
+
+{
+  const rel = f1Notes(F1_NOTES);
+  check('graf ladění bere jen tóny od G4 výš', rel.length === 4,
+    `${rel.length} z ${F1_NOTES.length}`);
+
+  const g1 = f1Geom(W, 200, rel);
+  check('geometrie grafu ladění se spočítá', !!g1);
+  check('bez tónů od G4 geometrie neexistuje (graf hlásí „nelze hodnotit")',
+    f1Geom(W, 200, f1Notes(NOTES)) === null);
+  check('osa X končí na konci posledního tónu (9 s)', g1.t1 === 9.0, `t1=${g1.t1}`);
+  check('osa X začíná na levém okraji', g1.x(0) === g1.padL);
+  check('osa X končí na pravém okraji',
+    Math.abs(g1.x(g1.t1) - (g1.padL + g1.plotW)) < 1e-9);
+
+  // Roundtrip jako u ostatních grafů — přesně tohle dělá klepnutí do grafu.
+  let worst = 0;
+  for (const t of [0, 0.7, 2.6, 5, 8.9, 9.0]) worst = Math.max(worst, Math.abs(g1.timeAtX(g1.x(t)) - t));
+  check('klepnutí do grafu ladění vrátí stejný čas (roundtrip)', worst < 1e-9,
+    `největší odchylka ${worst.toExponential(1)} s`);
+
+  // Ukazatel musí stát na TÓNU, který zní, ne mezi tóny — jinak by čára
+  // ukazovala do místa, kde se nic nezpívá.
+  const onNote = (t) => rel.some(n => t >= n.t_start && t <= n.t_end);
+  {
+    const px = g1.x(3.0);
+    const t = g1.timeAtX(px);
+    check('ukazatel v čase 3 s stojí na tónu C5 (2,6–4,0 s)', onNote(t) && t > 2.6 && t < 4.0,
+      `${t.toFixed(2)} s`);
+  }
+  check('tón, který se nehodnotí, se do grafu nebere (čtvrtý hodnocený je D5)',
+    rel[3].note === 'D5', rel.map(n => n.note).join(' '));
+
+  // Ukazatel musí mít platné souřadnice i na plátně — regrese, kdy `specGeom`
+  // vracel `plotT` místo `padT` a čára se „nakreslila" mimo plátno bez chyby.
+  const { canvas, ops } = mockCanvas(W, 200);
+  drawF1Head(canvas, F1_NOTES, 3.0);
+  const vert = ops.lines.find(l => l.from.y === g1.padT && l.to.y === g1.padT + g1.plotH);
+  check('ukazatel v grafu ladění má platné souřadnice', !!vert,
+    vert ? `x=${vert.from.x}` : 'čára chybí (NaN?)');
+  check('ukazatel v grafu ladění sedí na čas 3 s', vert && Math.abs(vert.from.x - g1.x(3.0)) < 1,
+    `x=${vert.from.x} vs ${g1.x(3.0).toFixed(1)}`);
+  check('mimo plochu grafu se ukazatel ladění nekreslí',
+    (() => { const m = mockCanvas(W, 200); drawF1Head(m.canvas, F1_NOTES, 99); return m.ops.strokes === 0; })());
+
+  // Graf samotný: drawF1 musí vrátit geometrii (app ji používá pro klik).
+  const { canvas: c2, ops: o2 } = mockCanvas(W, 200);
+  const gr = drawF1(c2, F1_NOTES, null);
+  check('drawF1 vrací geometrii pro klik', !!gr && typeof gr.timeAtX === 'function');
+  const bars = (o2.fills || []).filter(f => f[3] > 0 && f[2] <= 18);
+  check('sloupců je tolik, kolik je hodnocených tónů', bars.length === rel.length,
+    `${bars.length} sloupců na ${rel.length} tónů`);
+  /* Sloupec musí stát na SVÉM TÓNU na časové ose — ne na rovnoměrném rozestupu.
+   * ⚠️ Šířka sloupce se kvůli čitelnosti zastavuje na 18 px, takže z šířky se
+   * rozdíl nepozná; rozhoduje POLOHA. Poslední tón (D5, 5,7 s z 9 s) musí být
+   * vpravo za polovinou plochy, ale ne na jejím konci — při rovnoměrném
+   * rozestupu by seděl až u pravého okraje (naměřeno: 787 px místo 512 px). */
+  const last = bars.reduce((a, b) => (b[0] > a[0] ? b : a), bars[0]);
+  check('poslední sloupec stojí na svém čase (5,7 s), ne u pravého okraje',
+    Math.abs(last[0] - g1.x(5.7)) < 12,
+    `x=${last[0].toFixed(0)} vs čas 5,7 s na ${g1.x(5.7).toFixed(0)}, pravý okraj ${(g1.padL + g1.plotW).toFixed(0)}`);
+  check('první sloupec stojí na začátku nahrávky (tón A4 od 0 s)',
+    Math.abs(bars[0][0] - g1.x(0)) < 12, `x=${bars[0][0].toFixed(0)}`);
 }
 
 console.log(`\n${fail === 0 ? '✓' : '✗'} Ukazatel přehrávání: ${pass} prošlo, ${fail} selhalo\n`);

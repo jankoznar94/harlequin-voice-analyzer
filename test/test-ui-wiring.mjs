@@ -45,8 +45,17 @@ console.log('\n═══ 2. Osiřelé prvky v HTML (nikdo je nepoužívá) ═�
 // Ta ověřuje test 3, tady je ber jako použité.
 const kpiDyn = new Set();
 for (const m of app.matchAll(/setKpi\('([^']+)'/g)) { kpiDyn.add(m[1]); kpiDyn.add(m[1] + '-s'); }
+// Záložky grafů a jejich panely app.js skládá z krátkých názvů
+// (`$('tab-' + c)`, `$('pane-' + c)`, `$('c-' + …)`), takže se v textu
+// jako `$('tab-spr')` vůbec nevyskytují. Bez tohohle je test hlásí jako osiřelé.
+const tabIds = new Set();
+for (const c of ['spr', 'spec', 'f1']) {
+  tabIds.add('tab-' + c); tabIds.add('pane-' + c);
+  tabIds.add('c-' + c); tabIds.add('c-' + c + '-head');
+}
 const usedLoose = (id) =>
-  kpiDyn.has(id) || app.includes(id) || charts.includes(id) || sw.includes(id) ||
+  kpiDyn.has(id) || tabIds.has(id) ||
+  app.includes(id) || charts.includes(id) || sw.includes(id) ||
   liveUi.includes(id) || liveRun.includes(id) || liveCharts.includes(id);
 const orphanReal = [...idsInHtml].filter(id => !usedLoose(id));
 check('žádné osiřelé ID', orphanReal.length === 0,
