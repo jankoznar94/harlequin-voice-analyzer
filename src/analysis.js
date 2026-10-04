@@ -199,20 +199,127 @@ export function sprInterp(spec) {
  * @param {object} [opts] nfft, hopDiv (kolik rámců na okno), q (percentil)
  */
 export function sprFrames(x, sr, opts = {}) {
-  const nfft = opts.nfft || 4096;
-  const hopDiv = opts.hopDiv || 4;
-  const q = opts.q ?? 0.90;
+  const nfft = opts.nfft || SPR_NFFT;
+  const hopDiv = opts.hopDiv || SPR_HOP_DIV;
+  const q = opts.q ?? SPR_QUANTILE;
   const step = Math.max(128, Math.round(nfft / hopDiv));
+  const spr = new SprCore(sr, nfft);
   const vals = [];
-  const frame = new Float64Array(nfft);
   for (let s = 0; s + nfft <= x.length; s += step) {
-    frame.set(x.subarray(s, s + nfft));
-    const v = sprInterp(ltas(frame, sr, nfft));
+    const v = spr.of(x.subarray(s, s + nfft));
     if (v === v) vals.push(v);
   }
   if (!vals.length) return NaN;
-  vals.sort((a, b) => a - b);
-  return vals[Math.min(vals.length - 1, Math.round(q * (vals.length - 1)))];
+  return percentile(vals, q);
+}
+
+/**
+ * Horní percentil ze seznamu hodnot.
+ *
+ * Používá ho měření po rámcích na nahrávce I v živém režimu, aby obě cesty
+ * počítaly statistiku STEJNĚ. Kdyby si každá počítala vlastní, stačí jiné
+ * zaokrouhlení indexu a čísla se rozejdou — a to je přesně to, čemu se tu
+ * vyhýbáme (indikátor má ukazovat totéž, co pak vyjde v reportu).
+ */
+export function percentile(values, q) {
+  if (!values || !values.length) return NaN;
+  const s = [...values].sort((a, b) => a - b);
+  return s[Math.min(s.length - 1, Math.round(q * (s.length - 1)))];
+}
+
+/** Okno, ve kterém se SPR měří. Nahrávka i živý režim musí použít STEJNÉ. */
+export const SPR_NFFT = 4096;
+/** Kolik rámců okna na jeden krok (čtvrtina okna = 1024 vzorků @48 kHz). */
+export const SPR_HOP_DIV = 4;
+/** Percentil, kterým se z rámců bere výsledné číslo SPR. */
+export const SPR_QUANTILE = 0.90;
+
+/**
+ * SPR z výkonového spektra, BEZ alokace polí.
+ *
+ * Proč vlastní cesta: `sprInterp(ltas(...))` si na každé okno staví `{freq, db}`
+ * (dvě pole o tisíci hodnot) a ještě kopii okna. Na nahrávce to nevadí, ale
+ * živý indikátor počítá rámec 200× za sekundu a takové proudění alokací rozhýbe
+ * garbage collector — přesně to cukání, kvůli kterému živý režim vůbec má WASM
+ * jádro. Tady se čte přímo z výkonového spektra.
+ *
+ * Postup je IDENTICKÝ se `sprInterp`: vrchol se hledá po binech a pak se
+ * parabolicky zpřesní ze sousedů v dB. Shodu s `sprInterp` hlídá test
+ * (`test-live-parity.mjs`) — čísla se nesmějí rozejít, jinak by živý indikátor
+ * ukazoval jinou hodnotu, než jaká vyjde z nahrávky.
+ */
+export function sprPower(p, binHz) {
+  const hi = peakInPower(p, binHz, 2000, 4000);
+  const lo = peakInPower(p, binHz, 30, 2000);
+  if (!Number.isFinite(hi) || !Number.isFinite(lo)) return NaN;
+  return hi - lo;
+}
+
+/** Vrchol v pásmu z výkonového spektra, v dB, s parabolickým zpřesněním. */
+function peakInPower(p, binHz, lo, hi) {
+  const i0 = Math.max(1, Math.ceil(lo / binHz));
+  const i1 = Math.min(p.length - 2, Math.floor(hi / binHz));
+  let bi = -1, bv = -Infinity;
+  for (let i = i0; i <= i1; i++) {
+    if (p[i] > bv) { bv = p[i]; bi = i; }
+  }
+  if (bi < 0 || bv <= 0) return NaN;
+  const y0 = 10 * Math.log10(p[bi - 1] + 1e-20);
+  const y1 = 10 * Math.log10(bv + 1e-20);
+  const y2 = 10 * Math.log10(p[bi + 1] + 1e-20);
+  const den = y0 - 2 * y1 + y2;
+  if (den === 0) return y1;
+  const d = 0.5 * (y0 - y2) / den;
+  if (Math.abs(d) > 1) return y1;
+  return y1 - 0.25 * (y0 - y2) * d;
+}
+
+/**
+ * Měření SPR po rámcích — stavová a BEZ ALOKACÍ za běhu.
+ *
+ * Drží si vlastní okno, dvě pole pro FFT a výkonové spektrum; při každém
+ * zavolání `of()` se jen přepíše stejná paměť. Stav je schválně v objektu, ne
+ * v modulové proměnné: kdyby dvě analýzy běžely vedle sebe (nahrávka + živý
+ * režim), modulové úložiště by si je pomíchalo.
+ *
+ * @param {number} sr vzorkovací kmitočet
+ * @param {number} nfft okno (musí být stejné na nahrávce i živě)
+ * @param {number} [hopDiv] kolik rámců na krok (jen pro dokumentaci volajícího)
+ */
+export class SprCore {
+  constructor(sr, nfft = SPR_NFFT, hopDiv = SPR_HOP_DIV) {
+    this.sr = sr;
+    this.nfft = nfft;
+    this.hopDiv = hopDiv;
+    this.binHz = sr / nfft;
+    this._re = new Float64Array(nfft);
+    this._im = new Float64Array(nfft);
+    this._win = hann(nfft);
+    this._p = new Float64Array(nfft >> 1);
+  }
+
+  /**
+   * Přepočte okno a vrátí SPR (dB).
+   *
+   * ⚠️ KRÁTKÉ OKNO SE ODMÍTNE, NEDOPLŇUJE SE NULAMI. Toto byla reálná chyba:
+   * živý režim na začátku měření ještě 4096 vzorků nemá, a když se krátké okno
+   * tiše doplnilo nulami, vyšel z něj úplně jiný tvar spektra — naměřeno až
+   * **5 dB rozdíl** proti témuž oknu spočítanému s plnou historií. Nula není
+   * „žádný signál“, je to hrana, která do spektra přidá schod. Dokud není
+   * historie dost, SPR prostě není (indikátor ukáže „sbírá se…“) — což je
+   * poctivější než vydávat číslo z okna, které nemá co měřit.
+   */
+  of(win) {
+    const n = this.nfft;
+    if (!win || win.length < n) return NaN;
+    const re = this._re, im = this._im, w = this._win, p = this._p;
+    for (let i = 0; i < n; i++) re[i] = win[i] * w[i];
+    im.fill(0);
+    fft(re, im);
+    const half = n >> 1;
+    for (let i = 0; i < half; i++) p[i] = re[i] * re[i] + im[i] * im[i];
+    return sprPower(p, this.binHz);
+  }
 }
 
 /** FHE — frekvence, kde kumulativní energie v pásmu dosáhne 50 %. */

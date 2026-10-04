@@ -722,6 +722,11 @@ function addToHistory() {
  *   live: true  — v tabulce se pozná, že nejde o analýzu celé nahrávky
  *   ring_pct    — živý režim vyrovnanost ringu ZMĚŘIT NEUMÍ (na to je potřeba
  *                 segmentovat tóny z celé nahrávky), takže zůstává prázdné
+ *
+ * POZOR na jedno past: `spr_novy_median` se NEPŘEBÍRÁ z `sprMedian`. Živé
+ * číslo je medián přes rámce (ne přes tóny — živý režim tóny nezná), takže se
+ * do sloupce „přesné číslo" ukládá, ale nesmí se sčítat dohromady s nahrávkami
+ * bez poznámky. Rozdíl je vidět v tom, že záznam má `live: true`.
  */
 function addLiveToHistory(s) {
   const rows = loadHist();
@@ -733,7 +738,11 @@ function addLiveToHistory(s) {
     spr_unusable: !Number.isFinite(s.sprMedian),
     reason: Number.isFinite(s.sprMedian) ? null : 'málo zpívaných rámců',
     spr_median: Number.isFinite(s.sprMedian) ? s.sprMedian : null,
-    spr_novy_median: null,     // živý režim nové měření nepočítá — je na celý tón
+    /* Živé měření má TOTÉŽ měřidlo jako „přesné číslo“ v reportu (SPR po
+     * rámcích okna 4096, horní percentil). Ukládá se proto do stejného sloupce,
+     * ať se dá srovnávat — jenže přes tóny, ne přes rámce: živý režim tóny
+     * nesegmentuje, takže číslo je medián přes rámce celého měření. */
+    spr_novy_median: Number.isFinite(s.sprMedian) ? s.sprMedian : null,
     spr_sd: Number.isFinite(s.centsSpread) ? s.centsSpread : null,
     ring_pct: null,
     fhe: Number.isFinite(s.fheMedian) ? s.fheMedian : null,

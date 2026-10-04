@@ -112,6 +112,29 @@ try {
       (j.sprLine.maxY - j.sprLine.minY) > 3 * (j.sprFlat.maxY - j.sprFlat.minY),
       `rozkmit ${j.sprLine.maxY - j.sprLine.minY} px vs plochá ${j.sprFlat.maxY - j.sprFlat.minY} px`);
 
+    /* Dvě čáry v jednom grafu — přesná (okna 4096) a starší měřidlo (vyhlazený
+       průměr okna 2048). Kdyby kresba druhou čáru ignorovala, obrázek by
+       vypadal skoro stejně a nikdo by si toho nevšiml. Sonda na bledou čáru
+       hledá jiný odstín (promíchaný s pozadím), ne akcent. */
+    ok('starší měřidlo se kreslí jako druhá čára',
+      j.sprOldOnly?.n > 150, `${j.sprOldOnly?.n} px`);
+    /* Sonda podle alfy musí obě čáry ROZLIŠIT: stará sama nesmí mít plné
+       pixely. Tím se ověří měřidlo samo (bez toho by se „dvě čáry“ dalo
+       naměřit i sondou, která obě vidí jako jednu). */
+    ok('sonda podle alfy obě čáry rozlišuje (stará sama nemá plné pixely)',
+      j.sprOldOnlyFull?.n < 0.1 * (j.sprOldOnly?.n || 1e9),
+      `plných ${j.sprOldOnlyFull?.n} px z ${j.sprOldOnly?.n} bledých`);
+    /* Poloha se měří na TĚŽIŠTI a s odstupem, ne na tom, která je „výš“.
+       Když se starší čára nekreslí, sonda na bledou alfou chytá antialiasované
+       okraje té přesné — a ty leží o pár pixelů níž, takže by test prošel,
+       i když druhá čára vůbec není. Ověřeno mutací (vypnutá stará čára). */
+    ok('přesná čára leží VÝŠ než starší měřidlo (starší vibrato sráží)',
+      j.sprBothNew?.cy < j.sprBothOld?.cy - 10,
+      `přesná y≈${j.sprBothNew?.cy?.toFixed(1)}, starší y≈${j.sprBothOld?.cy?.toFixed(1)}`);
+    ok('obě čáry se vejdou do plátna',
+      j.sprBothNew?.minY > 0 && j.sprBothOld?.maxY < (j.canvases.c2[1] || 1e9),
+      `přesná ${j.sprBothNew?.minY}–${j.sprBothNew?.maxY}, starší ${j.sprBothOld?.minY}–${j.sprBothOld?.maxY} z ${j.canvases.c2[1]}`);
+
     /* ── osa SPR: pásmo −20…−10 dB musí být roztažené ──
        Tohle je jádro celé úpravy: stejných 10 dB musí v pásmu zabrat výrazně
        víc místa než mimo něj, jinak je okno, kde se zpěv opravdu pohybuje,

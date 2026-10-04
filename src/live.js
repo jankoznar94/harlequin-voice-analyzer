@@ -8,30 +8,45 @@
  * Co se měří a proč:
  *   výška  — okamžitá f0 a odchylka v centech od nejbližšího tónu
  *   úroveň — RMS v dBFS, aby bylo vidět, že se zpívá málo/moc
- *   SPR    — z KLUZAVÉHO spektra, ne z jednoho rámce. Jeden 42ms rámec je pro
- *            SPR příliš krátký a hodnota skáče o desítky dB podle fáze; proto
- *            se drží exponenciální průměr spektra (~0,2 s).
+ *   SPR    — PO RÁMCÍCH okna 4096, horní percentil. NENÍ to vyhlazený průměr
+ *            spektra; ten vibrato systematicky sráží dolů (naměřeno −2,4 dB
+ *            proti známé pravdě, kdežto tato cesta −0,0 dB). Důvody a čísla
+ *            jsou u `SprCore` v analysis.js.
+ *   FHE    — z klouzavého průměru spektra. Tady vyhlazení NEVADÍ: FHE je
+ *            medián energie v pásmu, ne vrchol, a na měřených nahrávkách
+ *            vychází živě a v reportu do 25 Hz od sebe.
  *
  * POZOR na jednu věc, která se u SPR plete: absolutní mez −20 dB NENÍ verdikt.
  * Živý indikátor proto hlásí hodnotu a referenční pásma, ale sám z ní nedělá
- * „má/nemá ring" — to umí až analýza nahrávky, která tóny segmentuje a porovnává
+ * „má/nemá ring“ — to umí až analýza nahrávky, která tóny segmentuje a porovnává
  * je mezi sebou (viz SKILL, „vyrovnanost ≠ úroveň").
  */
 
-import { hzToNote, spr, fhe, REFS } from './analysis.js';
+import {
+  hzToNote, REFS, percentile, SprCore, SPR_NFFT, SPR_QUANTILE,
+} from './analysis.js';
 
 /* ── konstanty ────────────────────────────────────────────────────────────── */
 
-/** Délka rámce pro živou analýzu. 2048 @48 kHz = 42,7 ms — dost na 70 Hz. */
+/** Délka rámce pro VÝŠKU a ÚROVEŇ. 2048 @48 kHz = 42,7 ms — dost na 70 Hz. */
 export const FRAME_SIZE = 2048;
 
 /** Jak chodí bloky z AudioWorkletu (ms). */
 export const BLOCK_MS = 20;
 
+/**
+ * Jak dlouhé klouzavé okno drží hodnoty SPR pro zobrazení.
+ *
+ * 200 ms = čtyřicet rámců. Delší okno znamená klidnější číslo, ale přes pauzy
+ * mezi tóny do něj vtéká doznívání (SPR tam padá o desítky dB) a indikátor by
+ * hlásil slabý ring na tónu, který ho má. Krátké okno naopak cuká.
+ */
+export const SPR_ROLL_MS = 200;
+
 /** Pod touto úrovní se rámec považuje za ticho a do spektra se nepřičte. */
 export const RMS_GATE = 0.010;
 
-/** Časová konstanta vyhlazení spektra v rámcích (α = 1/K). */
+/** Časová konstanta vyhlazení spektra v rámcích (α = 1/K). Pro FHE. */
 export const SPEC_ALPHA = 0.12;
 
 /**
@@ -73,10 +88,13 @@ export function rmsToDbfs(rms) {
 }
 
 /**
- * SPR a FHE přímo z LINEÁRNÍHO výkonového spektra.
+ * FHE a úroveň SPR z LINEÁRNÍHO výkonového spektra.
  *
- * Proč bez převodu na dB: SPR je jen rozdíl dvou vrcholů, takže
- * 10·log10(peakHi/peakLo) dá totéž číslo a ušetří 1024× log10 na každý rámec.
+ * PROČ TO TU JE I PRO SPR: `metricsFromPower` je dnešní cesta k FHE a k číslu,
+ * které se drží pro srovnání s reportem. Pro VYHODNOCENÍ SPR se ale používá
+ * nová cesta (`SprCore` — po rámcích, horní percentil), protože právě tohle
+ * průměrování vibrato systematicky sráží dolů. Naměřeno proti známé pravdě
+ * (tón 440 Hz, vibrato 3 %): staré číslo −7,4 dB, nové −0,1 dB.
  */
 export function metricsFromPower(acc, sampleRate, frameSize, nAcc = 1) {
   const half = acc.length;
@@ -127,6 +145,7 @@ export function fheBand(fheHz, fach) {
 /* ── stav živého měření ───────────────────────────────────────────────────── */
 
 export function createLiveState(sampleRate = 48000, frameSize = FRAME_SIZE) {
+  const rollFrames = Math.max(4, Math.round(SPR_ROLL_MS / BLOCK_MS));
   return {
     sampleRate,
     frameSize,
@@ -142,18 +161,56 @@ export function createLiveState(sampleRate = 48000, frameSize = FRAME_SIZE) {
     centsHist: [],        // pro rozptyl ladění (SUROVÉ hodnoty!)
     peakDbfs: -Infinity,
     startedAt: null,
+    // měření SPR po rámcích (okno 4096) — stejná cesta jako analýza nahrávky
+    sprCore: new SprCore(sampleRate, SPR_NFFT),
+    sprRoll: [],          // klouzavé okno posledních hodnot SPR (~200 ms)
+    sprRollMax: rollFrames,
+    sprLast: NaN,         // SPR posledního rámce
+  };
+}
+
+/** Souhrn SPR z celého měření — stejná statistika jako `spr_novy_median`. */
+export function sprSummary(state) {
+  const vals = state.sprSamples;
+  if (!vals.length) return { median: NaN, p90: NaN, n: 0 };
+  const s = [...vals].sort((a, b) => a - b);
+  const h = s.length >> 1;
+  return {
+    /* MEDIÁN se hlásí jako souhrnné číslo, protože TAK POČÍTÁ REPORT:
+     * `spr_novy_median` je medián přes tóny (z tónů, ne z rámců). Živý režim
+     * tóny nesegmentuje, takže medián přes rámce je nejbližší obdoba — a je
+     * to právě ta statistika, která s reportem sedí (naměřeno na drženém tónu
+     * 440 Hz: −2,38 živě proti −2,40 v reportu). Kdyby se hlásil p90, vyšlo by
+     * číslo systematicky o ~0,5 dB výš, protože p90 přes rámce je prostě jiná
+     * (a vyšší) statistika než p90 přes vnitřek tónu.
+     * p90 se proto hlásí jako DRUHÉ číslo — vyjadřuje totéž, co p90 u tónu. */
+    median: s.length & 1 ? s[h] : (s[h - 1] + s[h]) / 2,
+    p90: percentile(s, SPR_QUANTILE),
+    n: s.length,
   };
 }
 
 /**
  * Zpracuje jeden živý rámec.
  *
+ * Rámec je pro každou veličinu jiný a je to tak správně:
+ *   - VÝŠKA a ÚROVEŇ se berou z rámce 2048 (YIN je na něm odladěný a kratší
+ *     okno ho posouvá — naměřeno na A2: rámec 1024 dá 108,5 Hz místo 110,0).
+ *   - SPR se bere z OKNA 4096, klouzavě s krokem po blocích. Okno 2048 vidí
+ *     jen do 12 kHz (na 48 kHz), takže se do pásma 2–4 kHz vejdou dva biny a
+ *     vrchol nemá z čeho vzniknout. 4096 je TOTÉŽ okno, ze kterého počítá
+ *     analýza nahrávky — proto se čísla nemohou rozejít.
+ *
  * @param state  stav z createLiveState
- * @param dsp    backend (wasm-dsp.js) — bere vzorky a vrací f0 + spektrum
- * @param frame  vzorky rámce (Float32/Float64)
- * @returns snapshot pro UI
+ * @param dsp    backend (dsp-backend.js) — bere vzorky a vrací f0 + spektrum
+ * @param frame  vzorky rámce 2048 (Float32/Float64) — výška a úroveň
+ * @param sprWin posledních SPR_NFFT (4096) vzorků pro SPR. Když se nepředá
+ *               nebo je kratší, SPR se VYNECHÁ — dopočítávat ho z kratšího
+ *               okna nebo z nul je špatně (změřeno až 5 dB rozdíl), takže
+ *               indikátor do té doby ukazuje „sbírá se…“. Na začátku měření
+ *               to trvá 4 okna (80 ms), což je vidět jen jako krátké zpoždění.
  */
-export function feedFrame(state, dsp, frame) {
+export function feedFrame(state, dsp, frame, sprWin = null) {
   const sr = state.sampleRate;
   const n = Math.min(frame.length, state.frameSize);
 
@@ -172,12 +229,27 @@ export function feedFrame(state, dsp, frame) {
   if (voiced) {
     state.voicedFrames++;
     // spektrum se do klouzavého průměru přičte jen když se skutečně zpívá —
-    // jinak by ticho hodnotu SPR ředilo a indikátor by lhal směrem dolů
+    // jinak by ticho hodnotu FHE ředilo. (Na SPR to vliv nemá: ten se počítá
+    // po rámcích z vlastního okna.)
     dsp.accumulate();
     metrics = dsp.readMetrics();
-    if (Number.isFinite(metrics.spr)) state.sprSamples.push(metrics.spr);
     if (Number.isFinite(metrics.fhe)) state.fheSamples.push(metrics.fhe);
+
+    /* 2. SPR — z celého klouzavého okna 4096, po rámcích, horní percentil.
+     * Bere se vždy POSLEDNÍCH 4096 vzorků, takže okno sedí na tom, co se právě
+     * zpívá; horní percentil přes posledních ~200 ms odpovídá na otázku „jaký
+     * vrchol tam hlas teď umí postavit". Dokud okno 4096 není (první ~80 ms),
+     * `sprCore.of` vrátí NaN a SPR se prostě nehlásí. */
+    const v = sprWin ? state.sprCore.of(sprWin) : NaN;
+    if (Number.isFinite(v)) {
+      state.sprLast = v;
+      state.sprSamples.push(v);
+      state.sprRoll.push(v);
+      if (state.sprRoll.length > state.sprRollMax) state.sprRoll.shift();
+    }
   }
+
+  const sprNow = state.sprRoll.length ? percentile(state.sprRoll, SPR_QUANTILE) : NaN;
 
   let pitch = { note: null, cents: null, targetHz: null };
   if (voiced) {
@@ -214,8 +286,13 @@ export function feedFrame(state, dsp, frame) {
     targetHz: pitch.targetHz,
     dbfs,
     voiced,
-    spr: metrics.spr,
-    sprBand: sprBand(metrics.spr),
+    spr: sprNow,                         // co ukázat v číselníku (klouzavě)
+    sprLast: state.sprLast,              // SPR posledního rámce (okno 4096)
+    /* Starší měřidlo (vyhlazený průměr spektra okna 2048) — v grafu se kreslí
+     * jako bledá tlustá čára vedle přesné. Není to pozůstatek: je to číslo,
+     * které vibrato sráží dolů, a na grafu je vidět, o kolik. */
+    sprOld: metrics.spr,
+    sprBand: sprBand(sprNow),
     fhe: metrics.fhe,
     sprMedian: median(state.sprSamples),
     voicedFrames: state.voicedFrames,
@@ -233,16 +310,23 @@ export function median(a) {
 /** Souhrn po skončení živého měření. */
 export function summarizeLive(state) {
   const secs = state.startedAt ? (Date.now() - state.startedAt) / 1000 : 0;
-  const sprMed = median(state.sprSamples);
+  const sprS = sprSummary(state);
   return {
     seconds: secs,
     frames: state.frames,
     voicedFrames: state.voicedFrames,
     voicedPct: state.frames ? Math.round(100 * state.voicedFrames / state.frames) : 0,
     peakDbfs: state.peakDbfs,
-    sprMedian: sprMed,
-    sprBand: sprBand(sprMed),
-    sprSamples: state.sprSamples.length,
+    /* Dvě čísla SPR, stejně jako v reportu z nahrávky:
+     *   sprMedian — medián přes rámce okna 4096 (odpovídá `spr_novy_median`)
+     *   sprP90    — horní percentil přes rámce
+     * Staré číslo (průměr spektra) se ZÁMĚRNĚ nehlásí: bylo by to třetí
+     * měřítko, které s ničím nesedí, a hlavně to je přesně ta metrika, kterou
+     * vibrato systematicky sráží dolů. */
+    sprMedian: sprS.median,
+    sprP90: sprS.p90,
+    sprBand: sprBand(sprS.median),
+    sprSamples: sprS.n,
     fheMedian: median(state.fheSamples),
     centsSpread: spread(state.centsHist),
     noteNames: null,
