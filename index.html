@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Hlas">
-<link rel="stylesheet" href="src/style.css?v=24">
+<link rel="stylesheet" href="src/style.css?v=25">
 </head>
 <body>
 
@@ -53,7 +53,7 @@
        nechytala doprovod nebo orchestr. Baritonová transpozice árie se tedy
        měří jako tenor, pokud tóny leží v tenorovém rozsahu.</p>
 
-    <div class="actions">
+    <div class="actions" id="rec-actions">
       <button id="btn-record" class="btn primary" type="button">Nahrávat</button>
       <button id="btn-live" class="btn" type="button">Živě</button>
       <label class="btn" for="file-input">Načíst soubor</label>
@@ -75,30 +75,45 @@
       <input id="file-input" type="file" hidden>
     </div>
 
-    <div id="rec-bar" class="rec hidden">
-      <span class="dot" aria-hidden="true"></span>
-      <span id="rec-time">0:00</span>
-      <span id="rec-level" class="lvl" aria-hidden="true"></span>
-      <button id="btn-stop" class="btn primary" type="button">Ukončit nahrávání</button>
-    </div>
-
-    <details class="tips">
-      <summary>Jak nahrávat, aby čísla něco znamenala</summary>
-      <ul>
-        <li><strong>Vzdálenost mikrofonu vždy stejná</strong> — asi 30 cm od úst.
-            Jiná vzdálenost = jiná čísla, i když zpíváš stejně.</li>
-        <li><strong>Nekomprimovaný formát</strong> (WAV), pokud to jde. Komprese
-            (m4a, opus, mp3) rozbíjí spektrum nad 4 kHz.</li>
-        <li><strong>Vypni automatické zesílení</strong> (AGC) v nastavení telefonu.</li>
-        <li><strong>Srovnávej jen sám sebe</strong>, stejným mikrofonem a ve stejné
-            místnosti. Srovnávat s cizí nahrávkou nemá smysl.</li>
-      </ul>
-    </details>
+  <details class="tips">
+    <summary>Jak nahrávat, aby čísla něco znamenala</summary>
+    <ul>
+      <li><strong>Vzdálenost mikrofonu vždy stejná</strong> — asi 30 cm od úst.
+          Jiná vzdálenost = jiná čísla, i když zpíváš stejně.</li>
+      <li><strong>Nekomprimovaný formát</strong> (WAV), pokud to jde. Komprese
+          (m4a, opus, mp3) rozbíjí spektrum nad 4 kHz.</li>
+      <li><strong>Vypni automatické zesílení</strong> (AGC) v nastavení telefonu.</li>
+      <li><strong>Srovnávej jen sám sebe</strong>, stejným mikrofonem a ve stejné
+          místnosti. Srovnávat s cizí nahrávkou nemá smysl.</li>
+    </ul>
+  </details>
   </section>
+
+  <!--
+    Nahrávací lišta stojí ZÁMĚRNĚ MIMO #panel-input.
+
+    POZOR — reálná chyba, kterou uživatel viděl jako „Nahrávat nedělá nic":
+    lišta bývala uvnitř panelu a `startRecord()` na konci panel skryl
+    (`panel-input.classList.add('hidden')`) — tím zmizela i časomíra
+    a tlačítko „Ukončit nahrávání". Nahrávání přitom běželo dál. Naměřeno
+    v prohlížeči: lišta měla 0×0 px a na obrazovce nebylo čím nahrávání
+    ukončit; druhé klepnutí na „Nahrávat" pak hlásilo chybu mikrofonu,
+    který ve skutečnosti fungoval. Statická kontrola to nemohla vidět —
+    prvek byl v DOM i bez třídy `hidden`, schovával ho RODIČ.
+
+    Panel se při nahrávání schová (`display: none`), takže lišta se posune
+    na jeho místo — je vidět tam, kde byla tlačítka.
+  -->
+  <div id="rec-bar" class="rec hidden">
+    <span class="dot" aria-hidden="true"></span>
+    <span id="rec-time">0:00</span>
+    <span id="rec-level" class="lvl" aria-hidden="true"></span>
+    <button id="btn-stop" class="btn primary" type="button">Ukončit nahrávání</button>
+  </div>
 
   <!-- ─────────── ŽIVĚ ─────────── -->
   <section id="panel-live" class="panel hidden">
-    <div class="hdr-row">
+      <div class="hdr-row">
       <h2>Živě</h2>
       <span id="live-engine" class="hint"></span>
     </div>
@@ -384,6 +399,6 @@
 
 <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
-<script type="module" src="src/app.js?v=24"></script>
+<script type="module" src="src/app.js?v=25"></script>
 </body>
 </html>

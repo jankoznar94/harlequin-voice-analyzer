@@ -82,23 +82,45 @@ export function installAppEnv(opts = {}) {
   const audioCutoffHz = opts.audioCutoffHz ?? null;
 
   /* ── prvky ── */
-  const makeEl = (id) => ({
-    id, textContent: '', innerHTML: '', value: '', disabled: false,
-    onclick: null, onchange: null, className: '', files: [], style: { setProperty() {} },
-    classList: { add() {}, remove() {}, contains: () => false, toggle() {} },
-    append() {}, appendChild() {}, remove() {},
-    setAttribute() {}, getAttribute: () => null,
-    /* `click()` musí existovat — `download()` v app.js ho volá na vytvořeném
-     * <a>. Bez něj spadne celé stahování reportu na „a.click is not a function",
-     * což vypadá jako chyba kódu, ale je to chyba mocku: skutečný DOM ten
-     * element metodu MÁ. Mock bez ní test zneplatní (a přesně to se stalo). */
-    click() { if (typeof this.onclick === 'function') this.onclick(); },
-    querySelector: () => makeEl('child'), querySelectorAll: () => [],
-    addEventListener() {}, removeEventListener() {},
-    getContext: () => ctx2d(),
-    clientWidth: 800, clientHeight: 300, width: 800, height: 300,
-    getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 300 }),
-  });
+  /* ⚠️ `classList` musí být SKUTEČNÝ (ne prázdné metody): app.js podle něj
+   * rozhoduje, co je vidět (`classList.toggle('hidden', on)`). Když mock
+   * `contains()` vrací pořád false, test hlásí „lišta je vidět" i tam, kde
+   * kód udělal pravý opak — mock bez chování = test, který lže.
+   * `toggle` bere i druhý argument (force), stejně jako prohlížeč. */
+  const makeEl = (id) => {
+    const tridy = new Set();
+    return {
+      id, textContent: '', innerHTML: '', value: '', disabled: false,
+      onclick: null, onchange: null, className: '', files: [], style: { setProperty() {} },
+      classList: {
+        add: (c) => tridy.add(c),
+        remove: (c) => tridy.delete(c),
+        contains: (c) => tridy.has(c),
+        toggle: (c, force) => {
+          const on = force === undefined ? !tridy.has(c) : !!force;
+          if (on) tridy.add(c); else tridy.delete(c);
+          return on;
+        },
+      },
+      tridy,
+      /* `contains` potřebují testy, které se ptají „je ten prvek uvnitř
+       * schovaného panelu?" — přesně ta otázka, kterou statická kontrola
+       * nezvládne. Mock ji musí umět zodpovědět, jinak test lže. */
+      contains: () => false,
+      append() {}, appendChild() {}, remove() {},
+      setAttribute() {}, getAttribute: () => null,
+      /* `click()` musí existovat — `download()` v app.js ho volá na vytvořeném
+       * <a>. Bez něj spadne celé stahování reportu na „a.click is not a
+       * function", což vypadá jako chyba kódu, ale je to chyba mocku: skutečný
+       * DOM ten element metodu MÁ. Mock bez ní test zneplatní. */
+      click() { if (typeof this.onclick === 'function') this.onclick(); },
+      querySelector: () => makeEl('child'), querySelectorAll: () => [],
+      addEventListener() {}, removeEventListener() {},
+      getContext: () => ctx2d(),
+      clientWidth: 800, clientHeight: 300, width: 800, height: 300,
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 300 }),
+    };
+  };
   const els = new Map();
   const el = (id) => { if (!els.has(id)) els.set(id, makeEl(id)); return els.get(id); };
 
@@ -127,6 +149,13 @@ export function installAppEnv(opts = {}) {
       used.push('audiocontext');
       decodedWith = ab;
       return bufferFrom(synth(3.2, audioSampleRate, audioCutoffHz), audioSampleRate);
+    }
+    /* `startRecord()` v app.js staví měřič úrovně z mikrofonu. Bez těchto
+     * metod by test nahrávání spadl na „createMediaStreamSource is not a
+     * function" — a to je chyba mocku, ne kódu: prohlížeč je MÁ. */
+    createMediaStreamSource() { return { connect() {} }; }
+    createAnalyser() {
+      return { fftSize: 2048, getByteTimeDomainData() {}, connect() {} };
     }
     close() { return Promise.resolve(); }
   }
@@ -175,6 +204,27 @@ export function installAppEnv(opts = {}) {
   globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
   globalThis.alert = () => {};
   Object.defineProperty(globalThis, 'navigator', { value: {}, writable: true, configurable: true });
+
+  /* ── mikrofon a MediaRecorder ── */
+  /* app.js na ně sahá při nahrávání (`navigator.mediaDevices.getUserMedia`,
+   * `new MediaRecorder`). Když v mocku chybí, test nahrávání spadne na
+   * „is not a function" — chyba mocku, ne kódu. Prohlížeč je MÁ. */
+  if (!globalThis.navigator.mediaDevices) globalThis.navigator.mediaDevices = {};
+  if (!globalThis.navigator.mediaDevices.getUserMedia) {
+    globalThis.navigator.mediaDevices.getUserMedia = async () =>
+      ({ getTracks: () => [{ stop() {} }] });
+  }
+  globalThis.window.requestAnimationFrame = globalThis.requestAnimationFrame;
+  globalThis.window.cancelAnimationFrame = globalThis.cancelAnimationFrame;
+  if (!globalThis.MediaRecorder) {
+    globalThis.MediaRecorder = class {
+      constructor() { this.state = 'inactive'; this.mimeType = 'audio/webm'; }
+      static isTypeSupported() { return true; }
+      start() { this.state = 'recording'; }
+      stop() { this.state = 'inactive'; if (this.onstop) this.onstop(); }
+      addEventListener() {}
+    };
+  }
 
   return { el, els, audioEls, objectUrls, errors, used, get decodedWith() { return decodedWith; } };
 }
