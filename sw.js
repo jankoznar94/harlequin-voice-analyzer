@@ -2,14 +2,14 @@
  * Service worker — offline provoz.
  * Verze cache zvyš při změně souborů, jinak se drží stará.
  */
-const CACHE = 'vocal-lab-v23';
+const CACHE = 'vocal-lab-v24';
 
 /**
  * Verze nasazeného buildu. Zvyšovat spolu s CACHE výše a s ?v= v index.html.
  * Vypisuje se v patičce aplikace, aby uživatel poznal, že aktualizace proběhla —
  * bez toho po kliknutí na tlačítko nemá jak zjistit, jestli se něco stalo.
  */
-const APP_VERSION = '1.0.23';
+const APP_VERSION = '1.0.24';
 const ASSETS = [
   './',
   './index.html',

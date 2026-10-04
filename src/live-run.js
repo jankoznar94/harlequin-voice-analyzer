@@ -24,7 +24,7 @@ import {
   loadColors, drawTuning, drawLevel, drawSprHistory, drawFhe, classColor,
   SPR_MIN, SPR_MAX,
 } from './live-charts.js';
-import { REFS } from './analysis.js';
+import { REFS, SPR_NFFT } from './analysis.js';
 
 /** Kolik hodnot SPR se drží pro graf (~20 s při 5 vzorcích/s). */
 const SPR_HISTORY = 100;
@@ -133,11 +133,13 @@ export async function startLive(ui, fach = 'tenor') {
 
   const state = createLiveState(sampleRate, FRAME_SIZE);
   const history = [];
+  const historyOld = [];
 
   run = {
     stopping: false,
-    state, history, backend, ctx, stream, node, src, ui,
+    state, history, historyOld, backend, ctx, stream, node, src, ui,
     pending: new Float64Array(0),
+    sprBuf: new Float64Array(0),      // posledních SPR_NFFT vzorků pro SPR
     lastText: 0,
     framesSinceDraw: 0,
     visible: true,
@@ -173,29 +175,77 @@ export async function startLive(ui, fach = 'tenor') {
  * Okno se posouvá o BLOCK_MS, ale zpracovává se vždy FRAME_SIZE vzorků —
  * rámce se tedy překrývají. To je záměr: delší okno dá přesnější výšku,
  * zatímco posun o 20 ms udrží indikátor svižný.
+ *
+ * POZOR: SPR POTŘEBUJE VLASTNÍ ZÁSOBNÍK, ne `pending`. Ten se po každém rámci
+ * ořezává, takže v něm nikdy není víc než ~1,4 rámce vzorků — a okno 4096 by
+ * z něj tedy NIKDY nevzniklo (naměřeno: délka `merged` zůstane pod 2880, takže
+ * by se SPR nehlásilo vůbec a indikátor by zůstal prázdný). Proto se posledních
+ * SPR_NFFT vzorků drží zvlášť v `sprBuf`, který se jen posouvá.
  */
 function pushBlock(r, block) {
   const need = Math.round(r.state.sampleRate * BLOCK_MS / 1000);
+
+  // kruhový zásobník pro SPR: připoj blok, nech si posledních SPR_NFFT vzorků
+  r.sprBuf = appendKeep(r.sprBuf, block, SPR_NFFT);
+
   const merged = new Float64Array(r.pending.length + block.length);
   merged.set(r.pending, 0);
   merged.set(block, r.pending.length);
 
   let off = 0;
   while (merged.length - off >= FRAME_SIZE) {
-    const frame = merged.subarray(off, off + FRAME_SIZE);
-    const snap = feedFrame(r.state, r.backend, frame);
+    const end = off + FRAME_SIZE;
+    // okno pro SPR má vždy PLNÝCH SPR_NFFT vzorků; jinak se SPR nehlásí
+    const sprWin = r.sprBuf.length >= SPR_NFFT
+      ? r.sprBuf.subarray(r.sprBuf.length - SPR_NFFT)
+      : null;
+    const snap = feedFrame(r.state, r.backend, merged.subarray(off, end), sprWin);
     onFrame(r, snap);
     off += need;
   }
   r.pending = merged.slice(off);
 }
 
+/**
+ * Připojí blok na konec pole a nechá jen posledních `keep` hodnot.
+ *
+ * Záměrně bez `slice` na celém dosavadním obsahu: ten by s každým blokem
+ * kopíroval celou historii, což je v živém režimu 200× za sekundu zbytečná
+ * práce i alokace (a právě alokace rozhazuje garbage collector).
+ *
+ * POZOR: POSUN OŘEZU SE POČÍTÁ JAKO „KOLIK ZEPŘEDU ZAHODIT“, ne „kolik zezadu
+ * nechat“. Napoprvé jsem napsala `buf.length - skip`, což při přetečení
+ * nechalo v bufferu NULY (naměřeno: délka sice 4096, ale obsah prázdný) —
+ * a přesně nulami doplněné okno je to, co dělá z SPR nesmysl. Hlídá to
+ * `test/test-live-buffer.mjs`.
+ */
+function appendKeep(buf, block, keep) {
+  const total = buf.length + block.length;
+  if (total <= keep) {
+    const out = new Float64Array(total);
+    out.set(buf, 0);
+    out.set(block, buf.length);
+    return out;
+  }
+  const skip = total - keep;                 // kolik ZEPŘEDU se zahodí
+  const dropFromBuf = Math.min(buf.length, skip);
+  const out = new Float64Array(keep);
+  out.set(buf.subarray(dropFromBuf), 0);
+  out.set(block, buf.length - dropFromBuf);
+  return out;
+}
+
 /** Zpracuje jeden rámec — aktualizuje graf a podle potřeby překreslí. */
 function onFrame(r, snap) {
-  // do historie jde jen zpívaný rámec, jinak by pauzy dělaly propady
+  // do historie jde jen zpívaný rámec, jinak by pauzy dělaly propady.
+  // Obě čísla se plní STEJNĚ dlouho, aby se čáry v grafu nekryly posunuté.
   if (snap.voiced) {
     r.history.push(snap.spr);
     if (r.history.length > SPR_HISTORY) r.history.shift();
+    if (r.historyOld) {
+      r.historyOld.push(snap.sprOld);
+      if (r.historyOld.length > SPR_HISTORY) r.historyOld.shift();
+    }
   }
 
   const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
@@ -204,6 +254,7 @@ function onFrame(r, snap) {
   r.ui.onFrame({
     snap,
     history: r.history,
+    historyOld: r.historyOld,
     refreshText: wantText,
     fach: r.state.fach,
   });

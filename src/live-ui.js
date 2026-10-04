@@ -10,7 +10,7 @@ import {
   loadColors, drawTuning, drawLevel, drawSprHistory, drawFhe,
   COLORS, classColor,
 } from './live-charts.js';
-import { centsClass, levelClass, sprClass, fheBand } from './live.js';
+import { centsClass, levelClass, sprClass, sprBand, fheBand } from './live.js';
 import { REFS } from './analysis.js';
 
 const $ = (id) => document.getElementById(id);
@@ -63,7 +63,7 @@ function updateNumbers(snap, fach) {
     : '—', centsClass(snap.cents));
   setText(e.f0, voiced && snap.f0 > 0 ? `${snap.f0.toFixed(1)} Hz` : '—');
   setText(e.sprNow, fmtDb(snap.spr), sprClass(snap.sprBand));
-  setText(e.sprMed, fmtDb(snap.sprMedian), sprClass(sprBandOf(snap.sprMedian)));
+  setText(e.sprMed, fmtDb(snap.sprMedian), sprClass(sprBand(snap.sprMedian)));
 
   if (Number.isFinite(snap.fhe)) {
     const band = fheBand(snap.fhe, fach);
@@ -75,18 +75,11 @@ function updateNumbers(snap, fach) {
   setText(e.lvl, Number.isFinite(snap.dbfs) ? `${snap.dbfs.toFixed(0)} dB` : '—', lcls);
 }
 
-function sprBandOf(db) {
-  if (!Number.isFinite(db)) return 'none';
-  if (db >= REFS.SPR.profesional[0]) return 'profi';
-  if (db >= REFS.SPR.nezpevak[0]) return 'mezi';
-  return 'pod';
-}
-
 /* ── kreslení jednoho snímku ─────────────────────────────────────────────── */
 
 function render(ctxData) {
   const e = cacheEls();
-  const { snap, history, fach } = ctxData;
+  const { snap, history, historyOld, fach } = ctxData;
 
   drawTuning(e.tune, {
     // Na ručičku jde VYHLAZENÁ odchylka — surová skáče o desítky centů
@@ -96,6 +89,7 @@ function render(ctxData) {
   });
   drawSprHistory(e.spr, {
     history,
+    historyOld,
     refs: [
       [REFS.SPR.profesional[0], COLORS.dim],
       [REFS.SPR.nezpevak[0], COLORS.mute],

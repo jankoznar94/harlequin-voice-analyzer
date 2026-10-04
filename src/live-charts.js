@@ -237,14 +237,27 @@ export function sprTicks() {
 }
 
 /**
- * Vykreslí historii SPR jako spojitou čáru.
+ * Vykreslí historii SPR jako dvě čáry.
+ *
+ * Dvě čáry, stejná logika jako v reportu z nahrávky:
+ *   ACCENT (plná)  — PŘESNÉ číslo: SPR po rámcích okna 4096, horní percentil.
+ *                    To je totéž měřidlo jako `spr_novy` v analýze nahrávky,
+ *                    takže se dá číslo z indikátoru porovnat s reportem.
+ *   DIM (tenká)    — SPR z jednoho okna 2048. Záměrně zobrazená, i když je o
+ *                    pár dB níž: ukazuje, že starší měřidlo sráží vibrato, a
+ *                    je to číslo, na které je zvyklý kdekoli jinde v aplikaci.
  *
  * Referenční meze (nezpěvák −22,7 dB, profesionál −13,1 dB) se kreslí jako
  * vodorovné čárkované linky — ale NENÍ to verdikt „má/nemá ring". Je to jen
  * orientace, stejně jako v analýze nahrávky. Rozhoduje vyrovnanost mezi tóny,
  * kterou živý graf ukázat nemůže (na to je potřeba celá nahrávka).
+ *
+ * POZOR na jednu věc, která se u dvou čísel plete: srovnávat s literaturou
+ * (Omori) se smí JEN to starší — Omoriho čísla vznikla měřením, které vibrato
+ * rozmazává stejně. Proto jsou referenční linky vztažené ke staré čáře a
+ * přesná čára se kreslí jako druhá, ne místo ní.
  */
-export function drawSprHistory(cv, { history = [], refs = null }) {
+export function drawSprHistory(cv, { history = [], historyOld = null, refs = null }) {
   const { ctx, w, h } = fitCanvas(cv);
   ctx.clearRect(0, 0, w, h);
 
@@ -293,22 +306,34 @@ export function drawSprHistory(cv, { history = [], refs = null }) {
     ctx.setLineDash([]);
   }
 
-  // čára SPR
-  if (history.length >= 2) {
-    ctx.strokeStyle = COLORS.accent;
-    ctx.lineWidth = 2;
+  // čáry SPR — nejdřív STARŠÍ (tlustá, bledá), pak PŘESNÁ (tenká, akcent)
+  const lineOf = (vals, color, width, alpha) => {
+    if (!vals || vals.length < 2) return false;
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
     ctx.lineJoin = 'round';
     ctx.beginPath();
-    const n = history.length;
+    const n = vals.length;
     for (let i = 0; i < n; i++) {
-      const v = history[i];
+      const v = vals[i];
       const x = padL + (n > 1 ? (i / (n - 1)) * plotW : 0);
       const y = yOf(Number.isFinite(v) ? Math.max(SPR_MIN, Math.min(SPR_MAX, v)) : SPR_MIN);
       if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     }
     ctx.stroke();
+    ctx.globalAlpha = 1;
     ctx.lineWidth = 1;
-  } else {
+    return true;
+  };
+
+  let drew = false;
+  if (historyOld && historyOld.length >= 2) {
+    drew = lineOf(historyOld, COLORS.accent, 2.5, 0.35) || drew;
+  }
+  drew = lineOf(history, COLORS.accent, 1.5, 1) || drew;
+
+  if (!drew) {
     ctx.fillStyle = COLORS.mute;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';

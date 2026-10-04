@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Hlas">
-<link rel="stylesheet" href="src/style.css?v=23">
+<link rel="stylesheet" href="src/style.css?v=24">
 </head>
 <body>
 
@@ -116,8 +116,10 @@
       <div class="live-box">
         <span class="live-lbl">Síla hlasu (SPR)</span>
         <canvas id="c-live-spr" class="chart" height="120"></canvas>
-        <p class="hint live-note">Není to verdikt „má/nemá ring" — jen orientace proti
-           literatuře. Rozhoduje vyrovnanost mezi tóny, a tu pozná až celá nahrávka.</p>
+        <p class="hint live-note">Plná čára je přesné číslo (totéž měřidlo jako
+           v reportu z nahrávky). Bledá tlustá čára je starší měřidlo — vibrato
+           mu vrchol rozmazává dolů, takže leží níž. Není to verdikt „má/nemá
+           ring" — rozhoduje vyrovnanost mezi tóny, a tu pozná až celá nahrávka.</p>
       </div>
       <div class="live-box">
         <span class="live-lbl">Úroveň</span>
@@ -155,7 +157,9 @@
         <li><strong>Rozptyl ladění</strong> — jak moc se výška třese. Malý rozptyl =
             stabilní tón. Roste s vibratem, a to je správně.</li>
         <li><strong>SPR</strong> — sleduj, jak se hýbe při změně hlasitosti a
-            samohlásky. Ring jde nahoru s oporou, ne s tlačením.</li>
+            samohlásky. Ring jde nahoru s oporou, ne s tlačením. Plná čára je
+            přesné číslo; bledá tlustá je starší měřidlo, které vibrato sráží,
+            takže leží níž. Právě proto se s literaturou srovnává to starší.</li>
         <li><strong>Prohlížeč utlumí zvuk</strong>, když přepneš na jinou kartu nebo
             zhasne displej. Měření se v tu chvíli zastaví — není to vada aplikace.</li>
       </ul>
@@ -380,6 +384,6 @@
 
 <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
-<script type="module" src="src/app.js?v=23"></script>
+<script type="module" src="src/app.js?v=24"></script>
 </body>
 </html>
