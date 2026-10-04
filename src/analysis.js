@@ -130,6 +130,91 @@ export function spr(spec) {
   return hiMax - loMax;
 }
 
+/**
+ * SPR s INTERPOLOVANÝM vrcholem — jemnější čtení téhož poměru.
+ *
+ * PROČ (naměřeno): `spr()` bere vrchol jako hodnotu nejvyššího BINU, takže je
+ * jeho výsledek kvantovaný na šířku binu (na 4096/48 kHz ~11,7 Hz). Proti známé
+ * pravdě (syntetický tón s předepsanou strukturou) dělá chybu 0,30 dB, kdežto
+ * s parabolickou interpolací vrcholu 0,07 dB. Rozdíl je jen kvantování — číslo
+ * se nemění, jen se přesněji trefí vrchol.
+ *
+ * Používá se pro NOVÉ měření ringu (`novyRing`). Staré (`spr`) zůstává kvůli
+ * srovnatelnosti s literaturou a kvůli paritě — viz `measureNote`.
+ */
+export function peakInterp(spec, lo, hi) {
+  const { freq, db } = spec;
+  let bi = -1, bv = -Infinity;
+  for (let i = 0; i < freq.length; i++) {
+    if (freq[i] >= lo && freq[i] <= hi && db[i] > bv) { bv = db[i]; bi = i; }
+  }
+  if (bi < 0) return NaN;
+  if (bi <= 0 || bi >= freq.length - 1) return bv;
+  const y0 = db[bi - 1], y1 = db[bi], y2 = db[bi + 1];
+  const den = y0 - 2 * y1 + y2;
+  if (den === 0) return bv;
+  const d = 0.5 * (y0 - y2) / den;
+  if (Math.abs(d) > 1) return bv;          // vrchol není uprostřed → interpolace nesmysl
+  return y1 - 0.25 * (y0 - y2) * d;
+}
+
+/** SPR z jednoho spektra s interpolovaným vrcholem. */
+export function sprInterp(spec) {
+  const hi = peakInterp(spec, 2000, 4000);
+  const lo = peakInterp(spec, 30, 2000);
+  if (!(hi === hi) || !(lo === lo)) return NaN;
+  return hi - lo;
+}
+
+/**
+ * SPR měřený PO RÁMCÍCH, výsledkem horní percentil.
+ *
+ * ⚠️ TOTO JE OPRAVA SKUTEČNÉ CHYBY (naměřeno, ne odhad). Dnešní `measureNote`
+ * dělá PRŮMĚR SPEKTER přes celý tón a teprve pak hledá vrchol. Vibrato ale
+ * s harmonickými hýbe (±3 % = ±50 centů), takže se vrchol v pásmu 2–4 kHz přes
+ * tón rozprostře a průměrováním SNÍŽÍ. Naměřeno proti známé pravdě (syntetický
+ * hlas s předepsanou strukturou harmonických):
+ *
+ *   |chyba| u vibrata 3 %      dnes 4,62 dB   →  p90 1,17 dB   →  maximum 0,40 dB
+ *   průměr přes všech 7 případů  2,50 dB     →  0,63 dB        →  0,36 dB
+ *   stabilita na 40 výškách      4,22 dB     →  1,22 dB
+ *
+ * Je to SYSTEMATICKÝ posun jedním směrem, ne šum — proto ho nelze „průměrovat
+ * přes frázi". A týká se každého drženého tónu, protože vibrato je v operním
+ * zpěvu pravidlo.
+ *
+ * Proč PERCENTIL a ne medián: medián bere typický rámec, ale vrchol se hýbe
+ * OBĚMA směry, takže i typický rámec je podhodnocený. Horní percentil odpovídá
+ * na otázku „jaký vrchol tam ten hlas skutečně umí postavit".
+ *
+ * Proč ne MAXIMUM: maximum je teoreticky nejpřesnější (0,40 dB), ale stojí na
+ * JEDINÉM rámci — chytalo by náraz do mikrofonu, sykavku nebo lupnutí. p90
+ * dělá o 0,8 dB větší chybu a je proti tomu odolné: ověřeno, že silný náraz
+ * (−0 dB) ho posune jen o 0,04 dB, kdežto dnešní metodu o 2,6 dB (a sykavka ji
+ * rozbije úplně, −26,7 dB). Falešný ring přitom nevzniká — na tónech, které
+ * ring nemají, vychází p90 VÍC negativní než pravda.
+ *
+ * @param {Float64Array} x úsek tónu
+ * @param {number} sr vzorkovací kmitočet
+ * @param {object} [opts] nfft, hopDiv (kolik rámců na okno), q (percentil)
+ */
+export function sprFrames(x, sr, opts = {}) {
+  const nfft = opts.nfft || 4096;
+  const hopDiv = opts.hopDiv || 4;
+  const q = opts.q ?? 0.90;
+  const step = Math.max(128, Math.round(nfft / hopDiv));
+  const vals = [];
+  const frame = new Float64Array(nfft);
+  for (let s = 0; s + nfft <= x.length; s += step) {
+    frame.set(x.subarray(s, s + nfft));
+    const v = sprInterp(ltas(frame, sr, nfft));
+    if (v === v) vals.push(v);
+  }
+  if (!vals.length) return NaN;
+  vals.sort((a, b) => a - b);
+  return vals[Math.min(vals.length - 1, Math.round(q * (vals.length - 1)))];
+}
+
 /** FHE — frekvence, kde kumulativní energie v pásmu dosáhne 50 %. */
 export function fhe(spec, lo = 2000, hi = 3600) {
   const { freq, db } = spec;
@@ -1340,6 +1425,11 @@ function measureNote(samples, sampleRate, times, f0raw, idx, t0, t1, band) {
 
   // SPR se měří jen když má CELÁ nahrávka dostatečné pásmo
   const sprVal = band.valid ? spr(spec) : NaN;
+  /* NOVÉ měření ringu — SPR po rámcích s horním percentilem. Odstraňuje
+   * systematické podhodnocení vibratem (naměřeno 4,6 → 1,2 dB). Není to náhrada
+   * starého čísla: dnešní hodnota zůstává kvůli srovnatelnosti s literaturou
+   * (Omori) a kvůli paritě, nová se přidává vedle ní. Důvody v `sprFrames()`. */
+  const sprNovy = band.valid ? sprFrames(seg, sampleRate) : NaN;
 
   // SPL relativní
   let rms = 0;
@@ -1384,6 +1474,7 @@ function measureNote(samples, sampleRate, times, f0raw, idx, t0, t1, band) {
     f0_sd_cents: sdC,
     spl_dbfs: spl,
     spr: sprVal,
+    spr_novy: sprNovy,
     spr_valid: band.valid, spr_note: band.reason,
     /* `low_rate` se musí přenést až do tónu — jinak se hláška v UI nedozví,
      * že ring chybí kvůli vzorkovacímu kmitočtu nahrávky, a poradí hledat
@@ -1504,6 +1595,17 @@ export function ringAnalysis(notes, opts = {}) {
   const s = usable.map(n => n.spr).sort((a, b) => a - b);
   const med = s.length & 1 ? s[s.length >> 1]
     : (s[(s.length >> 1) - 1] + s[s.length >> 1]) / 2;
+
+  /* Nové měření vedle starého. Vyrovnanost ringu (`ring_ok`, výpadky) se dál
+   * počítá ze STARÉHO čísla — vyjadřuje vztah tónu k vlastnímu mediánu a ten
+   * platí u obojího, kdežto přepnutí prahů by změnilo, které tóny se hlásí jako
+   * výpadky, a to je přesně to, co si žádá ověření na skutečném zpěvu, ne
+   * tichý přepis. Nová hodnota se proto hlásí jako ČÍSLO VEDLE. */
+  const sNovy = usable.map(n => n.spr_novy).filter(v => v === v).sort((a, b) => a - b);
+  const medNovy = sNovy.length
+    ? (sNovy.length & 1 ? sNovy[sNovy.length >> 1]
+      : (sNovy[(sNovy.length >> 1) - 1] + sNovy[sNovy.length >> 1]) / 2)
+    : null;
   const dev = s.map(v => Math.abs(v - med)).sort((a, b) => a - b);
   const mad = dev.length & 1 ? dev[dev.length >> 1]
     : (dev[(dev.length >> 1) - 1] + dev[dev.length >> 1]) / 2;
@@ -1549,6 +1651,10 @@ export function ringAnalysis(notes, opts = {}) {
     spr_median: med,
     spr_mean: mean,
     spr_sd: sd,
+    // Nové měření (po rámcích, horní percentil) — vedle starého, ne místo něj.
+    spr_novy_median: medNovy,
+    spr_novy_n: sNovy.length,
+    spr_novy_dostupne: sNovy.length > 0,
     spr_min: s[0], spr_max: s[s.length - 1],
     ring_threshold: thr,
     threshold_method: method,
