@@ -2,7 +2,7 @@
  * Analýza zpěvního hlasu — hlavní logika aplikace.
  * Nahrávání/načtení → analýza v prohlížeči → výsledky → historie.
  */
-import { analyze, REFS, czPlural, vyhodnotFhe, fheLabel } from './analysis.js';
+import { analyze, REFS, czPlural, vyhodnotFhe, fheLabel, ringTrend } from './analysis.js';
 import {
   drawSpr, drawF1, drawSpec, drawTrend, fmt,
   sprGeom, specGeom, f1Geom, f1Notes,
@@ -517,6 +517,39 @@ function showResult(res, samples, sampleRate, label, secs, blob) {
       (n < z ? `Vyřazeno mimo fyziologický rozsah: ${z - n} ${czPlural(z - n, 'tón', 'tóny', 'tónů')}.` : ''));
   }
 
+  /* ── ukazatel 3c: průběh ringu v dlouhých tónech ───────────────────── */
+  /* Jedno číslo za tón (i to v grafu) neřekne, jestli ring drží od náběhu do
+   * konce, nebo na konci padá. Naměřeno na reálném zpěvu: uvnitř tónu se SPR
+   * hýbe s IQR 6,45 dB a pokles za tón jde až k 13,7 dB — a tón přitom vyjde
+   * jako „ring OK". Graf to ukáže křivkou; tahle dlaždice to řekne slovem. */
+  {
+    const nt = s.ring_trend_tones || 0;
+    const drops = s.ring_trend_drops || [];
+    if (!nt) {
+      setKpi('k-trend', '—', 'v nahrávce nejsou tóny nad 0,6 s', 'none', 'k-trend-d',
+        'Průběh ringu se dá sledovat jen na tónech, které trvají dost dlouho na to, ' +
+        'aby se v nich dalo měřit opakovaně. Zazpívej delší držené tóny (aspoň vteřinové).');
+    } else if (!drops.length) {
+      setKpi('k-trend', 'drží', `${nt} ${czPlural(nt, 'tón', 'tóny', 'tónů')} nad 0,6 s`,
+        'ok', 'k-trend-d',
+        'Na žádném dlouhém tónu ring v průběhu neupadl. To je to, co má být — barva ' +
+        'drží od náběhu do dokmitu, ne jen na začátku. ' +
+        (s.ring_trend_median_span > 0
+          ? `Běžné kolísání uvnitř tónu je ± ${(s.ring_trend_median_span / 2).toFixed(1)} dB, ` +
+            'což je fyziologické — hlas nikdy nedrží na desetinu decibelu.'
+          : ''));
+    } else {
+      const worst = drops[0];
+      setKpi('k-trend', `${drops.length}×`, `z ${nt} dlouhých ${czPlural(nt, 'tónu', 'tónů', 'tónů')}`,
+        drops.length > nt / 2 ? 'bad' : 'mid', 'k-trend-d',
+        `Na ${drops.length} ${czPlural(drops.length, 'tónu', 'tónech', 'tónech')} ring v průběhu ` +
+        `upadl (nejvíc o ${Math.abs(worst.drop_db).toFixed(1)} dB na ${worst.note} v ${fmtTime(worst.t)}). ` +
+        'Tón začne s ringem a končí bez něj — bývá to docházející dech nebo povolená opora ' +
+        'ke konci. V grafu ringu to poznáš podle křivky, která u daného tónu klesá dolů; ' +
+        'v seznamu níž máš časy, kam se vrátit.');
+    }
+  }
+
   /* ── ukazatel 4: kolik tónů se změřilo ─────────────────────────────── */
   const exc = [];
   if (s.n_excluded_short) exc.push(`${s.n_excluded_short} ${czPlural(s.n_excluded_short, 'útržek', 'útržky', 'útržků')} pod ${s.min_dur_used.toFixed(2)} s`);
@@ -649,6 +682,18 @@ function verdict(res) {
 
   if (s.dropouts && s.dropouts.length) {
     parts.push(`Vrátit se na ${s.dropouts.length} ${czPlural(s.dropouts.length, 'místo', 'místa', 'míst')} — najdeš ${czPlural(s.dropouts.length, 'ho', 'je', 'je')} v grafu níž podle času.`);
+  }
+
+  /* Průběh ringu v čase — jiná otázka než „drží na každém tónu": tady jde
+   * o to, jestli drží v PRŮBĚHU jednoho tónu. Tón může mít ring na začátku
+   * a ztratit ho ke konci, a přitom vyjít jako „ring OK". */
+  if (s.ring_trend_drops && s.ring_trend_drops.length) {
+    const d = s.ring_trend_drops;
+    const w = d[0];
+    parts.push(`<strong>Na ${d.length} ${czPlural(d.length, 'tónu', 'tónech', 'tónech')} ring v průběhu upadl</strong> ` +
+      `(nejvíc o ${Math.abs(w.drop_db).toFixed(1)} dB na ${w.note} v ${fmtTime(w.t)}) — ` +
+      'tón začne s ringem a končí bez něj. Podívej se v grafu na křivku u toho tónu; ' +
+      'bývá to docházející dech nebo povolená opora ke konci.');
   }
 
   // Barva hlasu — jen popis směru, NIKDY soud o kvalitě hlasu. Mimo referenční
@@ -1334,6 +1379,30 @@ function makeMarkdown() {
         'vada hlasu, jen se na tóny v této poloze reference nevztahuje.)');
     }
     L.push(`- Ladění od G4: ${s.f1_aligned_pct === null ? '—' : s.f1_aligned_pct.toFixed(1) + ' %'}`);
+    /* Průběh ringu v dlouhých tónech — jedno číslo za tón neřekne, jestli
+     * ring drží, nebo na konci padá. Naměřeno na reálném zpěvu: uvnitř tónu
+     * se SPR hýbe (IQR 6,45 dB), takže pokles o víc než 3 dB je informace,
+     * kterou jinde v reportu nikdo nenajde. */
+    const long = r.notes.filter(n => n.spr_series?.length >= 4);
+    if (long.length) {
+      L.push('', '### Průběh ringu v dlouhých tónech', '');
+      L.push('Medián SPR v první a poslední čtvrtině tónu — rozdíl ukazuje, jestli ring na konci padá ' +
+        '(záporně = ubývá). Počítá se z klouzavých oken 0,2 s uvnitř tónu.');
+      L.push('');
+      L.push('| tón | čas | délka | SPR tónu | začátek | konec | změna | rozkmit |');
+      L.push('|---|---|---|---|---|---|---|---|');
+      for (const n of long) {
+        const tr = ringTrend(n);
+        if (!tr) continue;
+        const mark = tr.drop_db <= -3 ? ' **pokles**' : tr.drop_db >= 3 ? ' (vzestup)' : '';
+        L.push(`| ${n.note} | ${fmtTime(n.t_start)} | ${n.dur.toFixed(2)} s | ${fmt(n.spr_novy, 1)} | ` +
+          `${fmt(tr.start_db, 1)} | ${fmt(tr.end_db, 1)} | ${tr.drop_db > 0 ? '+' : ''}${fmt(tr.drop_db, 1)} dB${mark} | ` +
+          `${fmt(tr.span_db, 1)} dB |`);
+      }
+      L.push('');
+      L.push('Body křivky (čas od začátku tónu → SPR) jsou i v JSONu v poli `spr_series`, ' +
+        'kdyby se měly kreslit mimo aplikaci.');
+    }
     /* Délka vokálního traktu (poloha hrtanu) — záměrně s počtem tónů
      * a s upozorněním, že jde o relativní číslo. Bez toho by ho někdo
      * srovnával s tabulkami a divil se, že mu trakt „vyrostl" o 1,5 cm. */
