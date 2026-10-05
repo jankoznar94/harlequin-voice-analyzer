@@ -1572,11 +1572,24 @@ export const REFS = {
   F1_tuning_from_hz: 392.0,
   F1_tuning_from_note: 'G4',
   fach_ranges: {
-    tenor: [131.0, 660.0],
-    baryton: [98.0, 494.0],
-    bas: [82.0, 392.0],
-    sopran: [262.0, 1175.0],
-    alt: [175.0, 880.0],
+    /* ⚠️ SPODNÍ MEZ MUSÍ LEŽET POD NEJNIŽŠÍM TÓNEM OBORU, ne na něm.
+     *
+     * Filtr v `analyze()` vyhazuje při `med < loF` (OSTŘE), takže mez nastavená
+     * přesně na nejnižší tón oboru ten tón vyhodí. Naměřeno syntetikou
+     * (`tools/exp-hranice-rozsahu.mjs`) na původních mezích: tenor C3 (130,81 Hz,
+     * mez 131) VYŘAZEN, alt F3 (174,61, mez 175) VYŘAZEN, soprán C4 (261,63,
+     * mez 262) VYŘAZEN. Baryton a bas procházely jen proto, že jejich meze jsou
+     * zaokrouhlené dolů (G2 = 98,00, E2 = 82,41).
+     *
+     * Mez je proto posunutá o CELÝ PŮLTÓN pod nejnižší tón oboru, aby tam
+     * zůstala rezerva i na rozladěný tón (C3 o 40 centů nízko = 127,8 Hz).
+     * Rozladěný tón, který vypadne z analýzy, je horší než tón na okraji oboru
+     * — vypadne ti zpěv, ne doprovod. */
+    tenor: [123.0, 660.0],      // B2 = 123,47 Hz (půltón pod C3)
+    baryton: [92.0, 494.0],     // F#2 = 92,50 Hz (půltón pod G2)
+    bas: [73.0, 392.0],         // D2 = 73,42 Hz (půltón pod E2)
+    sopran: [246.0, 1175.0],    // B3 = 246,94 Hz (půltón pod C4)
+    alt: [164.0, 880.0],        // E3 = 164,81 Hz (půltón pod F3)
     vse: [55.0, 1500.0],
   },
 };
@@ -1725,6 +1738,29 @@ export function analyze(samples, sampleRate, opts = {}) {
   });
   progress(0.35, 'Dělím nahrávku na tóny…');
 
+  /* Mezery v grafu — a proč tam jsou.
+   *
+   * PROČ TO TU JE (reálná stížnost): v grafu ringu bylo „mnoho mezer, i když
+   * tam zcela evidentně tóny jsou" — a `dropped` hlásil nula. Graf kreslí JEN
+   * tóny, takže každé prázdné místo je díra; `dropped` ale zachytí jen úseky,
+   * které segmentace vytvořila a pak vyřadila. Ostatní díry vznikaly tiše.
+   *
+   * Naměřeno na reálné nahrávce (zpev.wav): 8 mezer v grafu, `dropped` nula —
+   * a příčiny se RŮZNÍ (viz `tools/diag-mezery-povaha.mjs`):
+   *   - ticho (pauza, nadechnutí) — hlásit se NEMÁ, to žádná díra není
+   *   - signál, ale YIN v něm výšku nenašel
+   *   - výška nalezena, ale segmentace z ní tón neudělala (krátký úsek,
+   *     slitá fráze) — tohle je nejčastější a ukazuje na segmentaci
+   *
+   * Mezera se proto nebere „po rámcích", ale jako ROZPĚTÍ MEZI DVĚMA TÓNY —
+   * to je přesně to prázdné místo, které uživatel v grafu vidí. Uvnitř se
+   * změří tři věci: podíl rámců pod prahem (ticho), s výškou (YIN ji našel)
+   * a bez výšky. Podle nich se určí příčina.
+   *
+   * ⚠️ Nehlásit mezeru, která je už v `dropped` jako „mimo obor" nebo „příliš
+   * dlouhé" — jinak by se jeden problém objevil dvakrát pod dvěma jmény.
+   * (To je i důvod, proč se počítá až tady: `kept` i `dropped` už jsou hotové.) */
+
   // Segmentace: hysterezní čítač s ukotvenou notou. Nahradil starou segmentaci,
   // která na legatu a rychlých pasážích slévala noty do jedné (8 not → 1 tón,
   // 16 not → 1 tón) a na skocích přes oktávu je naopak ztrácela. Detaily v
@@ -1745,6 +1781,56 @@ export function analyze(samples, sampleRate, opts = {}) {
     else if (med < loF || med > hiF) dropped.push({ t0: p.t0, t1: p.t1, why: `${hzToNote(med)} mimo ${fach}` });
     else kept.push(p);
   }
+
+  /* Mezery v grafu — a proč tam jsou. */
+  const minGapS = opts.mezeraMinS ?? 0.6;
+  const mezeryGrafu = [];
+  {
+    const hop = Math.round(0.010 * sampleRate);
+    const frameSize = 2048;
+    const rmsMin = 0.008;                  // stejný prah jako v `pitchTrack`
+    const rozsah = kept.map(p => [p.t0, p.t1]).sort((a, b) => a[0] - b[0]);
+    const useky = [];
+    let konec = 0;
+    for (const [a, b] of rozsah) {
+      if (a - konec >= minGapS) useky.push([konec, a]);
+      konec = Math.max(konec, b);
+    }
+    if (duration - konec >= minGapS) useky.push([konec, duration]);
+
+    for (const [a, b] of useky) {
+      let ticho = 0, sVyskou = 0, bezVysky = 0, cnt = 0;
+      for (let t = a; t < b; t += 0.010) {
+        const start = Math.round(t * sampleRate);
+        let rms = 0;
+        for (let j = start; j < Math.min(samples.length, start + frameSize); j++) rms += samples[j] * samples[j];
+        rms = Math.sqrt(rms / frameSize);
+        cnt++;
+        if (rms < rmsMin) { ticho++; continue; }
+        const fi = Math.round(t / 0.010);
+        if (fi >= 0 && fi < f0.length && f0[fi] > 0) sVyskou++; else bezVysky++;
+      }
+      if (!cnt) continue;
+      /* Většina pod prahem = pauza. Nadechnutí se hlásit nemá — z reportu by
+       * se stalo smetiště a uživatel by hledal chybu v pauze. */
+      if (ticho / cnt > 0.5) continue;
+      const zbyva = cnt - ticho;
+      const why = (sVyskou / (zbyva || 1)) >= 0.25
+        ? 'výška nalezena, ale tón z ní nevznikl'
+        : 'signál bez nalezené výšky';
+      /* Překryv s už hlášeným vyřazením — nezdvojovat.
+       * ⚠️ Musí to být PŘEKRYV, ne „záznam mezeru obsahuje". `mimo obor` má
+       * jiné hranice než mezera vypočtená mezi tóny (úsek začíná jinde) a
+       * s ostrým `t1 >= b` se filtr mine — pak se objeví dvakrát tentýž
+       * problém pod dvěma jmény (naměřeno: „mimo tenor 1,8–3,4" i „výška
+       * nalezena, ale tón z ní nevznikl 1,4–3,8" na tomtéž místě). */
+      const uz = dropped.some(d => Math.min(d.t1, b) - Math.max(d.t0, a) > 0.05);
+      if (uz) continue;
+      mezeryGrafu.push({ t0: a, t1: b, why });
+    }
+  }
+  for (const m of mezeryGrafu) dropped.push(m);
+  dropped.sort((a, b) => a.t0 - b.t0);
 
   progress(0.45, `Měřím ${kept.length} tónů…`);
 
@@ -1794,6 +1880,17 @@ export function analyze(samples, sampleRate, opts = {}) {
   return {
     duration_s: duration, sample_rate: sampleRate, fach,
     n_notes: notes.length, n_dropped: dropped.length,
+    /* Proč tóny vypadly — CELÝ seznam, ne jen počet.
+     *
+     * PROČ: `n_dropped` samo nestačí. Uživatel nahrál 34 s, viděl „19 tónů,
+     * 9 vyřazeno" a nemohl zjistit, které úseky zmizely a proč — v nahrávce
+     * přitom byla dvě dlouhá prázdná místa (3,7–9,5 s a 22,3–31,2 s). Rozdíl
+     * mezi „mimo obor" (oktávová chyba YIN), „příliš dlouhé" a „bez f0" vede
+     * k úplně jiné opravě, ale z exportu se nedal poznat.
+     *
+     * Do UI se to neplete: `showResult` kreslí jen tóny (`notes`), `summary`
+     * počítá z `notes`. Tenhle seznam je pro report a JSON. */
+    dropped,
     peak_dbfs: peakDbfs,           // špička nahrávky (dBFS)
     band,                          // šířka pásma nahrávky (měřeno jednou)
     notes, summary, refs: REFS,

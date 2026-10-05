@@ -130,6 +130,37 @@ function fromMpegAudio(b) {
   return table[rateIdx] ?? NaN;
 }
 
+/** Přečte kmitočet z WebM/Matroska (A_OPUS → OpusHead). */
+function fromWebm(b) {
+  /* ⚠️ PROČ TO TU JE (reálná vada): tohle je formát, který si aplikace SAMA
+   * vyrábí (`MediaRecorder` v Chromiu dá `audio/webm;codecs=opus`). Bez téhle
+   * větve vracel `sniffSampleRate` NaN — a nahrávka z aplikace tak byla jediný
+   * formát, o kterém appka nevěděla, jaký má vzorkovací kmitočet. Následky:
+   *  - `low_rate` se nikdy nespustilo (podmínka `fileRate/2 < 4100` nemohla
+   *    vyjít), takže se nikdy neobjevila správná rada „nastav kvalitu záznamu";
+   *  - místo poměrového testu (`bandCut`) se použila PŘÍSNÁ absolutní mez
+   *    pásma 4100 Hz, a ta u nahrávky s tónem v nízké poloze nebo s tichým
+   *    rumblem vyjde pod prahem → „pásmo useknuto na ~3211 Hz, silná komprese,
+   *    nahrávej WAV". Rada „nahraj WAV" je přitom u appky, která WAV
+   *    neumí nahrát, nesplnitelná.
+   *
+   * Opus JE vždy 48 kHz (kodek pracuje na 48 kHz a při dekódování převzorkuje),
+   * takže se kmitočet nečte — hlásí se rovnou 48000. Je to stejná logika jako
+   * u Ogg/OpusHead níž. Ostatní kodexy ve WebM (Vorbis, PCM) se tu NEŘEŠÍ a
+   * vrací NaN: volající se pak chová jako dřív (přísnější cesta), což je
+   * bezpečný směr — radši nezměřit než pustit ořezaný zdroj. */
+  const findBytes = (needle) => {
+    const n = needle.length;
+    outer: for (let i = 0; i + n <= b.length; i++) {
+      for (let j = 0; j < n; j++) if (b[i + j] !== needle.charCodeAt(j)) continue outer;
+      return i;
+    }
+    return -1;
+  };
+  if (findBytes('OpusHead') >= 0) return 48000;
+  return NaN;
+}
+
 /**
  * Hlavní vstup: přečte vzorkovací kmitočet z hlavičky kontejneru.
  *
@@ -154,6 +185,10 @@ export function sniffSampleRate(ab) {
       const r = fromOgg(b, dv);
       if (r === r) return r;
     }
+    /* WebM/Matroska — hledá se rovnou podle bajtů 'OpusHead', takže se
+     * neplete s ničím jiným. (Signatura WebM je EBML hlavička 1A 45 DF A3,
+     * ale ta sama o sobě nic neříká o kodeku ani kmitočtu.) */
+    { const r = fromWebm(b); if (r === r) return r; }
     /* MP3/MP2 s ID3 tagem: rámec nezačíná na nule, ale až za tagem — a mezi
      * koncem ID3 a prvním rámcem bývá ještě zarovnání. Naměřeno na skutečném
      * souboru: hlavička ID3 hlásí 34 bajtů, první rámec 0xFFE3 je na offsetu

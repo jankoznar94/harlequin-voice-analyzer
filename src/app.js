@@ -1310,6 +1310,27 @@ function makeMarkdown() {
       `${n.ring_ok ? 'ANO' : 'NE'} | ${v(n.f1)} | ${v(n.f2)} | ${v(n.f1_f0_err_pct, 1)} | ` +
       `${v(n.hnr, 1)} | ${v(n.vib_rate, 1)} |`);
   }
+  L.push('', '## Vyřazené tóny', '');
+  /* Proč tóny vypadly — bez toho se „19 tónů, 9 vyřazeno" nedá dohledat.
+   * Tři různé důvody vedou ke třem různým opravám (mimo obor = oktávová chyba
+   * YIN, příliš dlouhé = slitá fráze, bez f0 = ticho v úseku). */
+  const dr = r.dropped || [];
+  if (!dr.length) {
+    L.push('- Žádný úsek nebyl vyřazen.');
+  } else {
+    L.push(`- Vyřazeno ${dr.length} ${czPlural(dr.length, 'úsek', 'úseky', 'úseků')} — ` +
+      'to jsou místa, ze kterých analýza neudělala tón, proto je níž v tabulce nenajdeš:');
+    const byWhy = new Map();
+    for (const d of dr) {
+      const key = d.why.replace(/\(.*\)/, '').trim();
+      byWhy.set(key, (byWhy.get(key) || 0) + 1);
+    }
+    for (const [why, cnt] of byWhy) {
+      const list = dr.filter(d => d.why.replace(/\(.*\)/, '').trim() === why)
+        .map(d => `${fmtTime(d.t0)}–${fmtTime(d.t1)}`).join(', ');
+      L.push(`  - **${why}** (${cnt}): ${list}`);
+    }
+  }
   L.push('', '## Omezení', '');
   L.push('- Absolutní hodnoty závisí na mikrofonu, vzdálenosti a ekvalizaci nahrávky. ' +
     'Srovnatelné je jen měření stejným řetězcem.');
