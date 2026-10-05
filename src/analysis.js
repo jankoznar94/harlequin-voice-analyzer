@@ -472,19 +472,48 @@ export function bandCut(env) {
 }
 
 /**
- * Je nahrávka vůbec schopna měřit SPR? (úseknuté pásmo = nesmysl)
+ * Jak je na tom pásmo nahrávky — a co z toho plyne pro jednotlivé metriky.
  *
  * Pásmo se měří na OBÁLCE spektra, ne na surovém — viz `spectralEnvelope`.
- * Do výsledku jde `limit_raw` (co by vyšlo ze surového spektra), aby se dalo
+ * Do výsledku jde `hz_raw` (co by vyšlo ze surového spektra), aby se dalo
  * rozlišit „skutečně useknutý zdroj" od „nízkofrekvenční tón přebíjí hlas".
  *
  * `opts.fileRate` je PŮVODNÍ vzorkovací kmitočet souboru (hlavička kontejneru).
  * Dekódování ho přepíše na 48 kHz, takže bez něj se nedá poznat, že nahrávka
  * byla nahraná na 16 kHz a výš než 8 kHz fyzicky nést nemůže.
+ *
+ * ⚠️ PROČ SE NEVRACÍ „nelze měřit" JAKO BRÁNA (reálná vada, naměřeno):
+ * dřív `valid: false` znamenalo, že se SPR nepočítá VŮBEC a celá analýza se
+ * zahodila hláškou „Ring nelze měřit". To je špatná odezva — naměřeno na
+ * brick-wall ořezu téhož zpěvu (68 tónů):
+ *   - počet tónů 68 → 65, hlasitost −15,9 → −16,0 dBFS, jitter 0,39 → 0,37 %
+ *     (beze změny — výška i tóny se měřit dají)
+ *   - SPR −15,03 → −14,51 dB i při ořezu na 3,0 kHz (poměr 2–4 kHz ku 0–2 kHz
+ *     ořez vydrží; na syntetickém tónu se špičkou ringu 3,1 kHz: −15,9 → −15,3)
+ *   - FHE (barva hlasu) 2707 → 2543 (3,4 kHz) → 2367 Hz (3,0 kHz); tenorské
+ *     referenční pásmo je 2705 ± 221, takže do ~3,4 kHz je údaj použitelný
+ *   - HNR 15,2 → 11,5 dB — KONTAMINOVANÝ, počítá se z pásma, které ořez ubere
+ * Takže se měří VŽDY a jen se k číslu přizná spolehlivost. `quality` proto
+ * říká, JAK je pásmo špatné, a `fhe_ok` / `hnr_ok` říkají, které metriky se
+ * z naměřeného pásma ještě dají použít.
+ *
+ * Vrací { measurable, quality, hz, hz_raw, rel, file_rate, fhe_ok, hnr_ok,
+ *         low_rate, reason }.
  */
-export function sprValid(spec, minHz = 4100, opts = {}) {
+export function bandQuality(spec, minHz = 4100, opts = {}) {
   const raw = bandwidthLimit(spec);
-  if (isNaN(raw)) return { valid: false, reason: 'spektrum nelze vyhodnotit', limit: NaN, limit_raw: NaN };
+  /* `valid` a `limit` jsou ZPĚTNĚ KOMPATIBILNÍ aliasy pro `measurable` a `hz`
+   * — starší volající (testy, diagnostické nástroje) se ptají jen „je pásmo
+   * v pořádku" a neměly by kvůli přejmenování přestat fungovat. Nový kód ať
+   * čte `quality`, protože „není v pořádku" má čtyři různé příčiny. */
+  const compat = (o) => ({ ...o, valid: o.measurable, limit: o.hz, limit_raw: o.hz_raw });
+  if (isNaN(raw)) {
+    return compat({
+      measurable: false, quality: 'unknown', hz: NaN, hz_raw: NaN, rel: NaN,
+      fhe_ok: false, hnr_ok: false, low_rate: false,
+      reason: 'spektrum nelze vyhodnotit',
+    });
+  }
   const env = spectralEnvelope(spec);
   const lim = bandwidthLimit(env);
   /* Bereme BLOVĚTVÍ hodnotu (širší z obou), protože každé měření má jiný slepý úhel:
@@ -494,18 +523,25 @@ export function sprValid(spec, minHz = 4100, opts = {}) {
   const limit = Math.max(raw, lim);
   const fileRate = opts.fileRate;
   const knownRate = fileRate === fileRate && fileRate > 0;
+  const rel = knownRate ? bandCut(env).rel : NaN;
+  /* Metriky, které z pásma žijí: FHE má referenční pásmo 2–3,6 kHz (naměřeno
+   * 2367 Hz při ořezu na 3,0 kHz, kdežto do 3,4 kHz sedí na 2543 proti 2707
+   * plného pásma), HNR je kontaminovaný už při 3,4 kHz. */
+  const fhe_ok = limit >= 3400;
+  const hnr_ok = limit >= 3400;
 
   /* ── Případ 1: soubor sám nemá na pásmo 2–4 kHz dost kmitočtů ──────────
-   * Nyquistová mez pod prahem znamená, že se ring měřit NEDÁ — a je to vada
-   * ZÁZNAMU (nízký kmitočet), ne zpěvu. Tuhle příčinu musí hláška pojmenovat,
-   * jinak pošle člověka hledat kompresi, která tam není. */
+   * Nyquistová mez pod prahem znamená, že výš než tam v nahrávce žádné
+   * kmitočty nejsou — a je to vada ZÁZNAMU (nízký kmitočet), ne zpěvu.
+   * Tuhle příčinu musí hláška pojmenovat, jinak pošle člověka hledat
+   * kompresi, která tam není. */
   if (knownRate && fileRate / 2 < minHz) {
-    return {
-      valid: false,
+    return compat({
+      measurable: false, quality: 'low_rate', hz: limit, hz_raw: raw, rel: NaN,
+      file_rate: fileRate, fhe_ok: false, hnr_ok: false, low_rate: true,
       reason: `nahrávka má vzorkovací kmitočet ${Math.round(fileRate / 1000)} kHz, ` +
         `takže nad ${Math.round(fileRate / 2)} Hz v ní žádné kmitočty nejsou`,
-      limit, limit_raw: raw, low_rate: true, file_rate: fileRate,
-    };
+    });
   }
 
   if (limit < minHz) {
@@ -517,29 +553,51 @@ export function sprValid(spec, minHz = 4100, opts = {}) {
     if (knownRate) {
       const cut = bandCut(env);
       if (cut.cut !== cut.cut) {
-        return { valid: false, reason: 'spektrum nelze vyhodnotit', limit, limit_raw: raw };
+        return compat({
+          measurable: false, quality: 'unknown', hz: limit, hz_raw: raw, rel: NaN,
+          fhe_ok, hnr_ok, low_rate: false, reason: 'spektrum nelze vyhodnotit',
+        });
       }
       if (cut.cut) {
-        return {
-          valid: false,
+        return compat({
+          measurable: false, quality: 'cut', hz: limit, hz_raw: raw, rel: cut.rel,
+          fhe_ok, hnr_ok, low_rate: false,
           reason: `pásmo 3,2–3,6 kHz je ${Math.abs(cut.rel).toFixed(1)} dB pod úrovní hlasu ` +
-            `(potřeba do −12,5 dB) - SPR nelze měřit`,
-          limit, limit_raw: raw, band_rel: cut.rel,
-        };
+            `(potřeba do −12,5 dB)`,
+        });
       }
-      return { valid: true, reason: 'ok', limit, limit_raw: raw, band_rel: cut.rel };
+      return compat({
+        measurable: true, quality: 'ok', hz: limit, hz_raw: raw, rel: cut.rel,
+        fhe_ok, hnr_ok, low_rate: false, reason: 'ok',
+      });
     }
     /* Kmitočet souboru neznáme (nepoznaná hlavička kontejneru): zůstává
-     * původní absolutní mez. Je přísnější, ale NIKDY nepustí ořezaný zdroj —
-     * u neznámého formátu je bezpečnější směr „radši nezměřit". */
-    return {
-      valid: false,
-      reason: `pásmo useknuto na ~${Math.round(limit)} Hz (potřeba aspoň ${minHz} Hz) - SPR nelze měřit`,
-      limit, limit_raw: raw,
-    };
+     * původní absolutní mez, ale výsledek už analýzu nezastaví — jen se
+     * označí jako `unknown_cut`, aby se dalo rozlišit „víme, že je to
+     * utopené" od „nevím, jaký kmitočet soubor má". */
+    return compat({
+      measurable: false, quality: 'unknown_cut', hz: limit, hz_raw: raw, rel: NaN,
+      fhe_ok, hnr_ok, low_rate: false,
+      reason: `pásmo useknuto na ~${Math.round(limit)} Hz (potřeba aspoň ${minHz} Hz)`,
+    });
   }
-  return { valid: true, reason: 'ok', limit, limit_raw: raw,
-    band_rel: knownRate ? bandCut(env).rel : NaN };
+  return compat({
+    measurable: true, quality: 'ok', hz: limit, hz_raw: raw, rel,
+    fhe_ok, hnr_ok, low_rate: false, reason: 'ok',
+  });
+}
+
+/**
+ * Totéž co `bandQuality`, ale pod starým jménem a s polem `valid`.
+ *
+ * Existuje jen kvůli volajícím, kteří se ptají jednou otázkou „je pásmo
+ * v pořádku". Nový kód ať používá `bandQuality` a jeho `quality`, protože
+ * „není v pořádku" má čtyři různé příčiny a každá znamená něco jiného.
+ */
+export function sprValid(spec, minHz = 4100, opts = {}) {
+  const q = bandQuality(spec, minHz, opts);
+  return { ...q, valid: q.measurable, limit: q.hz, limit_raw: q.hz_raw,
+    band_rel: q.rel, file_rate: q.file_rate };
 }
 
 /* --------------------------------------------------------------- F0 (YIN) -- */
@@ -1705,8 +1763,8 @@ export function analyze(samples, sampleRate, opts = {}) {
         `Kontroluji šířku pásma… ${Math.round((i / total) * 100)} %`)
     : null);
   const band = specFull
-    ? sprValid(specFull, 4100, { fileRate: opts.fileRate })
-    : { valid: false, reason: 'spektrum nelze vyhodnotit', limit: NaN };
+    ? bandQuality(specFull, 4100, { fileRate: opts.fileRate })
+    : { measurable: false, quality: 'unknown', reason: 'spektrum nelze vyhodnotit', hz: NaN };
 
   progress(0.12, 'Sleduji výšku tónu…');
 
@@ -1910,13 +1968,18 @@ function measureNote(samples, sampleRate, times, f0raw, idx, t0, t1, band, fach 
   const spec = ltas(seg, sampleRate);
   if (!spec) return null;
 
-  // SPR se měří jen když má CELÁ nahrávka dostatečné pásmo
-  const sprVal = band.valid ? spr(spec) : NaN;
+  /* SPR se měří VŽDY — i když je pásmo useknuté. Naměřeno na brick-wall
+   * ořezu téhož zpěvu: SPR −15,03 (plné) → −14,51 dB (ořez 3,0 kHz), hodnota
+   * se tedy nezbortí. Dřív se `band.valid === false` používal jako brána a
+   * celá analýza se zahodila hláškou „Ring nelze měřit" — u nahrávky, ze které
+   * se přitom výška, hlasitost I ring změřit daly. Spolehlivost čísla se
+   * přiznává zvlášť (`spr_quality`), ne zahozením výsledku. */
+  const sprVal = spr(spec);
   /* NOVÉ měření ringu — SPR po rámcích s horním percentilem. Odstraňuje
    * systematické podhodnocení vibratem (naměřeno 4,6 → 1,2 dB). Není to náhrada
    * starého čísla: dnešní hodnota zůstává kvůli srovnatelnosti s literaturou
    * (Omori) a kvůli paritě, nová se přidává vedle ní. Důvody v `sprFrames()`. */
-  const sprNovy = band.valid ? sprFrames(seg, sampleRate) : NaN;
+  const sprNovy = sprFrames(seg, sampleRate);
 
   // SPL relativní
   let rms = 0;
@@ -1961,6 +2024,14 @@ function measureNote(samples, sampleRate, times, f0raw, idx, t0, t1, band, fach 
    * (naměřeno 457 Hz rozdílu u syntetického sopránu = 1,3 SD). */
   const fheBand = FHE_BANDS[fach] || FHE_BANDS.tenor;
 
+  /* FHE se měří v pásmu PODLE OBORU — referenční hodnoty (Müller 2022) jsou
+   * z pásem soprán 2300–4500 Hz, ostatní 2000–3600 Hz. Když nahrávka nemá
+   * pásmo až do 3,4 kHz, údaj se zahodí: naměřeno na brick-wall ořezu téhož
+   * zpěvu 2707 Hz (plné) → 2543 (3,4 kHz) → 2367 Hz (3,0 kHz), kdežto
+   * referenční pásmo tenoru je 2705 ± 221 — od 3,0 kHz už by číslo ukazovalo
+   * „tmavší hlas" tam, kde je jen utopené pásmo. Viz `bandQuality` (`fhe_ok`). */
+  const fheVal = band.fhe_ok === false ? NaN : fhe(spec, fheBand[0], fheBand[1]);
+
   return {
     idx, t_start: t0, t_end: t1, dur,
     note: hzToNote(f0), f0,
@@ -1968,17 +2039,25 @@ function measureNote(samples, sampleRate, times, f0raw, idx, t0, t1, band, fach 
     spl_dbfs: spl,
     spr: sprVal,
     spr_novy: sprNovy,
-    spr_valid: band.valid, spr_note: band.reason,
+    /* `spr_valid` tu zůstává kvůli ZPĚTNÉ KOMPATIBILITĚ reportů, ale UŽ NENÍ
+     * „smí se měřit" — SPR se měří vždy. Rozlišuje jen „pásmo je v pořádku"
+     * od „pásmo je nějak vadné", a jak vadné, to říká `spr_quality`. */
+    spr_valid: band.measurable, spr_note: band.reason,
+    spr_quality: band.quality,
     /* `low_rate` se musí přenést až do tónu — jinak se hláška v UI nedozví,
      * že ring chybí kvůli vzorkovacímu kmitočtu nahrávky, a poradí hledat
      * kompresi. `file_rate` je původní kmitočet souboru (hlavička kontejneru),
      * ne ten, na který ho převedlo dekódování. */
     low_rate: !!band.low_rate,
     file_rate: band.file_rate ?? NaN,
-    bandwidth_hz: band.limit,
+    bandwidth_hz: band.hz,
     alpha: alphaRatio(spec),
-    fhe: fhe(spec, fheBand[0], fheBand[1]),
-    hnr: hnrV,
+    fhe: fheVal,
+    /* HNR se u useknutého pásma NEHLÁSÍ — je kontaminovaný, protože se počítá
+     * z pásma, které mu ořez ubere (naměřeno na brick-wall ořezu téhož zpěvu:
+     * 15,2 → 11,5 dB, tj. −3,7 dB, kdežto SPR se posunul o +0,5 dB). Vymyšlené
+     * číslo je horší než žádné. */
+    hnr: band.hnr_ok === false ? NaN : hnrV,
     jitter_pct: jit,
     shimmer_pct: NaN,      // vyžaduje sledování amplitudy po periodách
     f1: F1, f2: F2, f3: F3,
@@ -2040,7 +2119,7 @@ export function ringAnalysis(notes, opts = {}) {
   const minDur = opts.minDur ?? 0.30;        // kratší tón = SPR z příliš krátkého vzorku
   const splDrop = opts.splDrop ?? 20;        // tišší tón = SPR pod úrovní šumu
 
-  const valid = notes.filter(n => n.spr_valid && n.spr === n.spr);
+  const valid = notes.filter(n => n.spr === n.spr);
   if (!valid.length) {
     const why = notes.find(n => !n.spr_valid)?.spr_note || 'neznámý důvod';
     /* Příčinu ztráty tónů je potřeba předat DÁL, ne jen textem: UI podle
@@ -2051,6 +2130,44 @@ export function ringAnalysis(notes, opts = {}) {
       spr_unusable: true, reason: why,
       n_notes: 0, n_notes_total: notes.length, n_notes_excluded: notes.length,
       ...(lowRate ? { low_rate: true, file_rate: lowRate.file_rate } : {}),
+    };
+  }
+
+  /* ── Spolehlivost: pásmo nahrávky ───────────────────────────────────────
+   * „Není v pořádku" má čtyři různé příčiny a každá znamená něco jiného:
+   *   ok               — pásmo v pořádku, čísla platí jako dřív
+   *   low_rate         — soubor sám výš než na Nyquist nemá kmitočty (vada záznamu)
+   *   cut              — pásmo je prokazatelně utopené (komprese/historický záznam)
+   *   unknown_cut      — nepoznali jsme kmitočet souboru a absolutní mez je nízká
+   *   unknown          — spektrum se vůbec nepodařilo vyhodnotit
+   *
+   * ⚠️ RING SE PŘESTO MĚŘÍ (naměřeno: SPR −15,03 → −14,51 dB i na ořezu 3,0 kHz,
+   * tóny 68 → 65, hlasitost i jitter beze změny). Dřív se celý výsledek zahodil
+   * hláškou „Ring nelze měřit" — a to je špatná odezva: člověk nedostal ani to,
+   * co měřit šlo. `spr_confidence` proto číslo NEZAHOZUJE, jen ho označí jako
+   * orientační. Slabý hlas bez ringu musí dostat špatné skóre, ne hlášku. */
+  const quality = valid.find(n => n.spr_quality && n.spr_quality !== 'ok')?.spr_quality || 'ok';
+  const confidence = quality === 'ok' ? 'ok' : 'orientacni';
+  const qualityNote = quality === 'unknown_cut'
+    ? `vzorkovací kmitočet souboru se nepodařilo přečíst z hlavičky, takže se pásmo ` +
+      `měřilo přísnější absolutní mezí; naměřená mez pásma je ~${Math.round(
+        valid.find(n => n.bandwidth_hz === n.bandwidth_hz)?.bandwidth_hz ?? NaN)} Hz`
+    : notes.find(n => !n.spr_valid)?.spr_note || null;
+
+  /* ── Výjimka: NÍZKÝ VZORKOVACÍ KMITOČET se pořád odmítá ────────────────
+   * Není to „naměřené číslo je nejisté", ale „naměřené číslo je NESMYSL":
+   * pásmo 2–4 kHz v takovém souboru fyzicky NENÍ (naměřeno na 8 kHz: mez
+   * 3762 Hz), takže by SPR vzniklo z pásma, které s ringem nemá co dělat.
+   * Tady je správná odezva „změř to jinak", ne „tady je orientační číslo".
+   * U `cut` / `unknown_cut` se naopak měří — tam se SPR posune jen o desetiny
+   * dB (naměřeno −15,03 → −14,51 dB i na ořezu 3,0 kHz). */
+  if (quality === 'low_rate') {
+    const lr = valid.find(n => n.low_rate) || notes.find(n => n.low_rate);
+    const fr = lr?.file_rate;
+    return {
+      spr_unusable: true, reason: lr?.spr_note || 'nízký vzorkovací kmitočet nahrávky',
+      n_notes: 0, n_notes_total: notes.length, n_notes_excluded: notes.length,
+      low_rate: true, file_rate: fr,
     };
   }
 
@@ -2139,6 +2256,10 @@ export function ringAnalysis(notes, opts = {}) {
 
   return {
     spr_unusable: false,
+    spr_confidence: confidence,
+    spr_quality: quality,
+    spr_quality_note: qualityNote,
+    band_hz: valid.find(n => n.bandwidth_hz === n.bandwidth_hz)?.bandwidth_hz ?? null,
     n_notes: usable.length,
     n_notes_total: notes.length,
     n_notes_excluded: notes.length - usable.length,
