@@ -20,7 +20,7 @@
     "test:parity": "node test/test-live-parity.mjs",
     "test:buffer": "node test/test-live-buffer.mjs",
     "test:live-vtl": "node test/test-live-vtl.mjs",
-    "test:all": "for t in dsp fhe band vtl vyrazene mezery sample-rate eta pipeline ui-wiring spec sw-update sw-rescue playhead player-wiring nahravani-ui decode live-wiring live-smooth live-parity live-buffer live-vtl smoke-browser; do node test/test-$t.mjs || exit 1; done",
+    "test:all": "for t in dsp fhe band vtl vyrazene mezery slouceni sample-rate eta pipeline ui-wiring spec sw-update sw-rescue playhead player-wiring nahravani-ui decode live-wiring live-smooth live-parity live-buffer live-vtl smoke-browser; do node test/test-$t.mjs || exit 1; done",
     "check:parity": "node tools/parity.mjs check",
     "check:wasm": "node tools/wasm-parity.mjs",
     "check:live": "node tools/live-check.mjs",

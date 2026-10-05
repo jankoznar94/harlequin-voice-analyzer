@@ -927,6 +927,18 @@ export function countNotePlateaus(times, f0, opts = {}) {
   const glideCents = opts.glissandoCents ?? 40; // menší krok mezi úseky = klouzavý přechod
   const anchorFrames = opts.anchorFrames ?? 5;
   const glideSpan = opts.glideSpanCents ?? 150;
+  /* ⚠️ POJISTKA PROTI SLÉVÁNÍ (reálná vada, naměřeno na nahrávce uživatele):
+   * držený tón na „A" (D3, 5,36 s) vyšel jako JEDEN tón s rozkmitem
+   * **1328 centů** a `is_glide: true`. To není tón, to je slepenec — a protože
+   * `measureNote()` bere medián přes CELÝ úsek, vznikne z něj číslo, které
+   * nepopisuje ani jeden zpívaný tón: SPR −23,7 dB (u téhož hlasu jinde
+   * −13,8 dB), `f0_sd_cents` 103, FHE 3023 Hz proti referenčním 2705 ± 221.
+   * Uživatel to viděl jako jednu hodnotu v grafu místo pěti sekund tónu.
+   *
+   * Rozkmit nad `glideSpan` se dosud jen PŘIZNAL (`is_glide`) a s číslem se
+   * počítalo dál. Správně se takový slepenec rozdělí na kratší úseky (viz
+   * `splitWideRun`) — teprve pak má každé číslo co popisovat. */
+  const maxRunSpan = opts.maxRunSpanCents ?? 700;
 
   const n = f0.length;
   const cents = new Float64Array(n);
@@ -971,13 +983,21 @@ export function countNotePlateaus(times, f0, opts = {}) {
     const t0 = times[i], t1 = times[lastGood];
     if (t1 > t0) {
       const vals = [];
-      for (let q = i; q <= lastGood; q++) if (f0[q] > 0) vals.push(cents[q]);
+      const chrono = [];      // CHRONOLOGICKY — dělení slepenců potřebuje pořadí
+      const f0s = [];
+      for (let q = i; q <= lastGood; q++) {
+        if (f0[q] > 0) { vals.push(cents[q]); chrono.push(cents[q]); f0s.push(f0[q]); }
+      }
       if (vals.length) {
+        const chronoTimes = [];
+        for (let q = i; q <= lastGood; q++) if (f0[q] > 0) chronoTimes.push(times[q]);
         vals.sort((a, b) => a - b);
         runs.push({
           t0, t1, cents: vals[vals.length >> 1],
           spanCents: vals[vals.length - 1] - vals[0],
           frames: vals.length,
+          /* Pro dělení slepenců: hodnoty v POŘADÍ RÁMCŮ + jejich časy. */
+          centsArr: chrono, f0s, timesArr: chronoTimes,
         });
       }
     }
@@ -985,6 +1005,46 @@ export function countNotePlateaus(times, f0, opts = {}) {
     let nx = lastGood + 1;
     while (nx < n && !(f0[nx] > 0)) nx++;
     i = Math.max(nx, lastGood + 1);
+  }
+
+  /* Rozděl běh, jehož ROZKMIT je tak velký, že to nemůže být jeden tón.
+   *
+   * PROČ: uživatel nahrál držený tón na „A" (D3) a dostal jeden tón o délce
+   * 5,36 s s rozkmitem 1328 centů — tedy víc než oktávu. `measureNote()` z něj
+   * udělal medián přes celý úsek, takže SPR −23,7 dB (jinde u téhož hlasu
+   * −13,8 dB) a FHE 3023 Hz proti referenčním 2705 ± 221 pro tenor. Podle
+   * skóre to vypadalo jako špatný ring, přitom šlo o slepenec víc tónů.
+   *
+   * Dělí se na hranici NEJVĚTŠÍHO skoku mezi sousedními rámci, rekurzivně,
+   * dokud je rozkmit nad mezí. Teprve pak má každé číslo co popisovat.
+   */
+  function splitWideRun(r, mez) {
+    const out = [];
+    const fronta = [r];
+    while (fronta.length) {
+      const x = fronta.pop();
+      const v = x.centsArr;
+      const rozp = x.centsArr[x.centsArr.length - 1] - x.centsArr[0];
+      if (rozp <= mez || v.length < 4) { out.push(x); continue; }
+      let nej = -1, kde = 0;
+      for (let q = 1; q < v.length; q++) {
+        const d = Math.abs(v[q] - v[q - 1]);
+        if (d > nej) { nej = d; kde = q; }
+      }
+      const leva = v.slice(0, kde), prava = v.slice(kde);
+      if (!leva.length || !prava.length) { out.push(x); continue; }
+      const mk = (vals, f0s, ts) => {
+        const sr = [...vals].sort((a, b) => a - b);
+        return { centsArr: vals, frames: vals.length, f0s, timesArr: ts,
+          t0: ts[0], t1: ts[ts.length - 1],
+          cents: sr[sr.length >> 1], spanCents: vals[vals.length - 1] - vals[0] };
+      };
+      const fl = x.f0s.slice(0, kde), fp = x.f0s.slice(kde);
+      const tl = x.timesArr.slice(0, kde), tp = x.timesArr.slice(kde);
+      if (fl.length) fronta.push(mk(leva, fl, tl));
+      if (fp.length) fronta.push(mk(prava, fp, tp));
+    }
+    return out;
   }
 
   // Slij sousední úseky, které dělí jen drobný krok — to je klouzavý přechod,
@@ -1002,8 +1062,22 @@ export function countNotePlateaus(times, f0, opts = {}) {
     } else merged.push({ ...r });
   }
 
-  return merged
+  /* Až po slévání: co i tak zůstalo s rozkmitem přes `maxRunSpan`, rozdělit.
+   * Musí to být až tady — kdyby se dělilo před sléváním, slévání by kusy
+   * s drobnými kroky zase spojilo. */
+  const split = [];
+  for (const r of merged) {
+    if (!r.centsArr || r.spanCents <= maxRunSpan) { split.push(r); continue; }
+    for (const kus of splitWideRun(r, maxRunSpan)) {
+      kus.spanCents = kus.centsArr[kus.centsArr.length - 1] - kus.centsArr[0];
+      kus.isGlide = kus.spanCents > glideSpan;
+      split.push(kus);
+    }
+  }
+
+  return split
     .filter(r => r.t1 - r.t0 >= minDur)
+    .sort((a, b) => a.t0 - b.t0)
     .map(r => ({
       t0: r.t0, t1: r.t1, f0: Math.pow(2, r.cents / 1200) * 440,
       cents: r.cents, spanCents: r.spanCents,
