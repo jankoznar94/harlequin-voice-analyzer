@@ -109,7 +109,23 @@ const SPEC_PAD = { l: 42, r: 12, t: 12, b: 26 };
  *
  * @returns {null|object} null, když není co měřit (žádný tón s platným SPR)
  */
-export function sprGeom(w, h, notes, summary, offX = 0) {
+/**
+ * Geometrie grafu ringu.
+ *
+ * ⚠️ **Osa X musí končit na DÉLCE NAHRÁVKY, ne na konci posledního tónu.**
+ *
+ * Reálná vada, kterou uživatel viděl (naměřeno v prohlížeči na 72,6s nahrávce):
+ * přehrávač hlásil 1:12 (72,58 s), ale `t1` grafu bylo 71,43 s = konec posledního
+ * tónu. Ukazatel na grafu proto dojel na konec osy o 1,15 s dřív, než nahrávka
+ * skutečně skončila — a čím delší dozvuk na konci, tím větší rozdíl. Spektrogram
+ * i přehrávač jedou do délky souboru, takže se dvě osy v jedné obrazovce
+ * rozcházely.
+ *
+ * `duration` je proto nový parametr; když se nepředá (0), chová se geometrie
+ * jako dřív a osa končí posledním tónem — na tom stojí starší testy a volající,
+ * kteří délku neznají.
+ */
+export function sprGeom(w, h, notes, summary, offX = 0, duration = 0) {
   const plotW = w - SPR_PAD.l - SPR_PAD.r, plotH = h - SPR_PAD.t - SPR_PAD.b;
   const meas = notes.filter(n => n.spr === n.spr);
   if (!meas.length) return null;
@@ -130,7 +146,10 @@ export function sprGeom(w, h, notes, summary, offX = 0) {
   let lo = Math.min(...vals, thr, ...extra), hi = Math.max(...vals, ...extra);
   const pad = Math.max(2, (hi - lo) * 0.12);
   lo -= pad; hi += pad;
-  const t1 = Math.max(...notes.map(n => n.t_end), 1);
+  /* Konec osy: délka nahrávky, když ji známe — jinak konec posledního tónu.
+   * Nikdy ale méně, než kam sahají data: tóny se nesmí ocitnout mimo osu. */
+  const lastNoteEnd = Math.max(...notes.map(n => n.t_end), 0);
+  const t1 = Math.max(duration || 0, lastNoteEnd, 1);
   // `offX` = kolik pixelů plátna je odscrollováno doleva (posuvné plátno ringu).
   // Pro neposuvné plátno je 0 a chová se to jako dřív.
   const x = (t) => SPR_PAD.l + (t / t1) * plotW - offX;
@@ -233,7 +252,7 @@ export function drawSpecHead(canvas, duration, t) {
  */
 export function drawSprHead(canvas, notes, summary, t, opts = {}) {
   const { ctx, w, h } = setupOverlay(canvas, SPR_H, opts.width || 0);
-  const g = sprGeom(w, h, notes, summary);
+  const g = sprGeom(w, h, notes, summary, 0, opts.duration || 0);
   if (g) drawPlayhead(ctx, g, t, true);
 }
 
@@ -258,7 +277,7 @@ export function drawSpr(canvas, notes, summary, playheadT = null, opts = {}) {
   const cssWidth = opts.width || 0;
   const offX = opts.offX || 0;
   const { ctx, w, h } = setup(canvas, SPR_H, cssWidth);
-  const g = sprGeom(w, h, notes, summary, offX);
+  const g = sprGeom(w, h, notes, summary, offX, opts.duration || 0);
   if (!g) {
     ctx.fillStyle = COL.textDim;
     ctx.fillText(summary?.reason || 'Ring nelze měřit', 46, h / 2);
@@ -329,7 +348,13 @@ export function drawSpr(canvas, notes, summary, playheadT = null, opts = {}) {
      * mají časovou řadu, kreslí stuha (rozptyl v okně) + středová linka.
      *
      * Stuha se kreslí jako JEDNA plocha (tam a zpět), ne dva tahy — dva tahy by
-     * v překryvu ztmavly a vypadaly jako změna barvy. */
+     * v překryvu ztmavly a vypadaly jako změna barvy.
+     *
+     * POZOR — proč to vedle sebe vypadalo jako dvě různé věci: křivku dostane
+     * jen tón od `SPR_SERIE_MIN_DUR` (0,6 s). Kratší tón proto zůstane plným
+     * sloupcem (od své hodnoty dolů), delší se rozkreslí křivkou v čase. Nejsou
+     * to dva údaje o témž tónu — jsou to dva RŮZNÉ tóny a každý je nakreslený
+     * tím, co o něm jde říct. Vysvětluje to legenda pod grafem. */
     const ser = n.spr_series;
     if (ser && ser.length >= 2) {
       const t0 = n.t_start;
@@ -430,12 +455,15 @@ export function f1Notes(notes) {
  * Sloupec stojí na svém tónu a je široký jako tón; krátký tón má nejméně 3 px,
  * aby nezmizel (jinak by graf tvrdil, že tam žádný tón není).
  */
-export function f1Geom(w, h, rel) {
+export function f1Geom(w, h, rel, duration = 0) {
   const plotW = w - F1_PAD.l - F1_PAD.r, plotH = h - F1_PAD.t - F1_PAD.b;
   if (!rel || !rel.length || !(plotW > 0) || !(plotH > 0)) return null;
   // Osa X je ČAS nahrávky — stejně jako u grafu ringu a spektrogramu. Ukazatel
   // proto jede plynule i tady a klik míří na přesné místo v nahrávce.
-  const t1 = Math.max(...rel.map(n => Math.max(n.t_end, n.t_start)), 0.001);
+  // POZOR — konec osy je DÉLKA NAHRÁVKY, ne konec posledního tónu: jinak
+  // ukazatel ladění dojede dřív než přehrávač (stejná vada jako u grafu ringu).
+  const lastEnd = Math.max(...rel.map(n => Math.max(n.t_end, n.t_start)), 0);
+  const t1 = Math.max(duration || 0, lastEnd, 0.001);
   const x = (t) => F1_PAD.l + (Math.max(0, Math.min(t, t1)) / t1) * plotW;
   return {
     w, h, padL: F1_PAD.l, padR: F1_PAD.r, padT: F1_PAD.t, padB: F1_PAD.b,
@@ -445,17 +473,17 @@ export function f1Geom(w, h, rel) {
 }
 
 /** Ukazatel přes graf ladění — světlá čára na tónu, který právě zní. */
-export function drawF1Head(canvas, notes, t) {
+export function drawF1Head(canvas, notes, t, duration = 0) {
   const rel = f1Notes(notes);
   const { ctx, w, h } = setupOverlay(canvas, F1_H);
-  const g = f1Geom(w, h, rel);
+  const g = f1Geom(w, h, rel, duration);
   if (!g) return;
   drawPlayhead(ctx, g, t);
 }
 
-export function drawF1(canvas, notes, hintEl) {
+export function drawF1(canvas, notes, hintEl, duration = 0) {
   const { ctx, w, h } = setup(canvas, F1_H);
-  const g = f1Geom(w, h, f1Notes(notes));
+  const g = f1Geom(w, h, f1Notes(notes), duration);
   if (!g) {
     const padL = F1_PAD.l;
     const nBelow = notes.length;

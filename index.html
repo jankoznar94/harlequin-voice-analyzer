@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Hlas">
-<link rel="stylesheet" href="src/style.css?v=34">
+<link rel="stylesheet" href="src/style.css?v=35">
 </head>
 <body>
 
@@ -312,8 +312,15 @@
             <p class="chart-legend">
               <span><i style="background:#6a9e6a"></i>ring drží</span>
               <span><i style="background:#b5675e"></i>výpadek ringu</span>
-              <span><i style="background:#6f6862"></i>neměřeno (krátký/tichý tón)</span>
-              <span>pásma na pozadí = literatura</span>
+              <span><i style="background:#6f6862"></i>neměřeno</span>
+              <span>pásma = literatura</span>
+              <!-- Tvar značky podle délky tónu. Bez téhle věty vypadalo
+                   „obdélník vedle křivky" jako dva různé údaje o témž tónu —
+                   jsou to ale dva RŮZNÉ tóny: krátký kreslí sloupec, držený
+                   (od 0,6 s) křivku, protože v jeho průběhu je vidět, jak ring
+                   kolísá. V HTML, ne v plátně: v plátně by se lepila na okraj
+                   při posuvu a pletla se s popisky os. -->
+              <span>křivka = držený tón</span>
             </p>
             <p class="hint hidden" id="hint-scroll">Graf se posouvá vodorovně,
                ukazatel jede s nahrávkou.</p>
@@ -418,6 +425,6 @@
 
 <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
-<script type="module" src="src/app.js?v=34"></script>
+<script type="module" src="src/app.js?v=35"></script>
 </body>
 </html>

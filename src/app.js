@@ -750,6 +750,30 @@ function unusableText(res) {
       'že není ztlumený systémový vstup a že máš vybrané správné vstupní zařízení.';
   }
   if (s.n_notes_total === 0) {
+    /* ⚠️ NEJDŘÍV ROZSAH, PAK TEPRVE „není tam zpěv".
+     *
+     * Reálná vada: uživatel nahrál nízké tóny a dostal „bývá to řeč, šum,
+     * doprovod bez zpěvu" — přitom analýza tón NAŠLA a jen ho vyřadila jako
+     * „G2 mimo tenor". Naměřeno v prohlížeči: G2 (98 Hz, −8 dBFS) dá na
+     * rozsahu Tenor 0 tónů a přesně tuto hlášku, na rozsahu Baryton 1 tón
+     * a plný výsledek. Člověk pak hledá vadu v mikrofonu nebo v hlasu, kterou
+     * nemá — a stačilo přepnout rozsah. Je to táž chyba, jakou jsme už jednou
+     * opravovali u hlášky o WAV: text tvrdil příčinu, kterou kód nezná.
+     *
+     * Rozhoduje se podle `dropped`: když v něm jsou úseky „mimo <obor>",
+     * tóny se našly a jen leží jinde, než jsme dovolili. */
+    const mimo = (res.dropped || []).filter(d => /mimo /.test(d.why || ''));
+    if (mimo.length) {
+      const noty = [...new Set(mimo.map(d => String(d.why).split(' ')[0]))].slice(0, 4).join(', ');
+      const rozsah = REFS.fach_ranges[res.fach];
+      const rozsahTxt = rozsah ? `${Math.round(rozsah[0])}–${Math.round(rozsah[1])} Hz` : '—';
+      return '<strong>Tóny se našly, ale leží mimo zvolený rozsah nahrávky.</strong><br>' +
+        `Změřil jsem ${mimo.length} ${czPlural(mimo.length, 'úsek', 'úseky', 'úseků')} ` +
+        `(${escapeHtml(noty)}), ale rozsah <strong>${escapeHtml(res.fach)}</strong> ` +
+        `(${rozsahTxt}) je vyřadil — proto zbylo 0 tónů. ` +
+        'Přepni <strong>Rozsah nahrávky</strong> na polohu, ve které jsi zpíval (nízké tóny → ' +
+        'Baryton nebo Bas), a změř to znovu. S tvým hlasem ani s nahrávkou to nemá co dělat.';
+    }
     return '<strong>V nahrávce nejsou žádné zpívané tóny.</strong><br>' +
       `Špička je ${fmt(peak, 0)} dBFS, takže zvuk tam je — ale analýza v něm nenašla ` +
       'udržené tóny hlasu. Bývá to řeč, šum, doprovod bez zpěvu, nebo nahrávka kratší než ~2 s. ' +
@@ -1021,7 +1045,7 @@ function layoutCharts(force = false) {
 
   if (which === 'spr') layoutSpr();
   else if (which === 'spec') drawSpecPane();
-  else drawF1($('c-f1'), current.result.notes, $('hint-f1'));
+  else drawF1($('c-f1'), current.result.notes, $('hint-f1'), current.result.duration_s || 0);
 }
 
 /** Když se plátno rozměří jinak (jiný displej, otočení, jiná šířka okna),
@@ -1055,7 +1079,7 @@ function watchChartLayout() {
 const sprScroll = { width: 0, offX: 0 };
 
 function sprDrawOpts() {
-  return { width: sprScroll.width, offX: sprScroll.offX };
+  return { width: sprScroll.width, offX: sprScroll.offX, duration: current?.result?.duration_s || 0 };
 }
 
 function layoutSpr() {
@@ -1237,7 +1261,7 @@ function onChartClick(e) {
     if (!sprGeomRef) return;
     t = sprGeomRef.timeAtX(px);
   } else if (cv.id === 'c-f1') {
-    const g = f1Geom(cv.clientWidth, F1_H, f1Notes(current?.result?.notes));
+    const g = f1Geom(cv.clientWidth, F1_H, f1Notes(current?.result?.notes), current?.result?.duration_s || 0);
     if (!g) return;
     t = g.timeAtX(px);
   } else {
@@ -1317,7 +1341,7 @@ function paintHeads(t, force = false) {
   const notes = current.result.notes;
   // Ring a ladění: bez měřitelných tónů se nic nekreslí (kresba to sama přeskočí).
   drawSprHead($('c-spr-head'), notes, s, t, sprDrawOpts());
-  drawF1Head($('c-f1-head'), notes, t);
+  drawF1Head($('c-f1-head'), notes, t, current?.result?.duration_s || 0);
   const dur = current?.result?.duration_s;
   if (dur) drawSpecHead($('c-spec-head'), dur, t);
 }
