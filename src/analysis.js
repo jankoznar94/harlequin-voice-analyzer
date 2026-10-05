@@ -1572,11 +1572,24 @@ export const REFS = {
   F1_tuning_from_hz: 392.0,
   F1_tuning_from_note: 'G4',
   fach_ranges: {
-    tenor: [131.0, 660.0],
-    baryton: [98.0, 494.0],
-    bas: [82.0, 392.0],
-    sopran: [262.0, 1175.0],
-    alt: [175.0, 880.0],
+    /* ⚠️ SPODNÍ MEZ MUSÍ LEŽET POD NEJNIŽŠÍM TÓNEM OBORU, ne na něm.
+     *
+     * Filtr v `analyze()` vyhazuje při `med < loF` (OSTŘE), takže mez nastavená
+     * přesně na nejnižší tón oboru ten tón vyhodí. Naměřeno syntetikou
+     * (`tools/exp-hranice-rozsahu.mjs`) na původních mezích: tenor C3 (130,81 Hz,
+     * mez 131) VYŘAZEN, alt F3 (174,61, mez 175) VYŘAZEN, soprán C4 (261,63,
+     * mez 262) VYŘAZEN. Baryton a bas procházely jen proto, že jejich meze jsou
+     * zaokrouhlené dolů (G2 = 98,00, E2 = 82,41).
+     *
+     * Mez je proto posunutá o CELÝ PŮLTÓN pod nejnižší tón oboru, aby tam
+     * zůstala rezerva i na rozladěný tón (C3 o 40 centů nízko = 127,8 Hz).
+     * Rozladěný tón, který vypadne z analýzy, je horší než tón na okraji oboru
+     * — vypadne ti zpěv, ne doprovod. */
+    tenor: [123.0, 660.0],      // B2 = 123,47 Hz (půltón pod C3)
+    baryton: [92.0, 494.0],     // F#2 = 92,50 Hz (půltón pod G2)
+    bas: [73.0, 392.0],         // D2 = 73,42 Hz (půltón pod E2)
+    sopran: [246.0, 1175.0],    // B3 = 246,94 Hz (půltón pod C4)
+    alt: [164.0, 880.0],        // E3 = 164,81 Hz (půltón pod F3)
     vse: [55.0, 1500.0],
   },
 };
@@ -1794,6 +1807,17 @@ export function analyze(samples, sampleRate, opts = {}) {
   return {
     duration_s: duration, sample_rate: sampleRate, fach,
     n_notes: notes.length, n_dropped: dropped.length,
+    /* Proč tóny vypadly — CELÝ seznam, ne jen počet.
+     *
+     * PROČ: `n_dropped` samo nestačí. Uživatel nahrál 34 s, viděl „19 tónů,
+     * 9 vyřazeno" a nemohl zjistit, které úseky zmizely a proč — v nahrávce
+     * přitom byla dvě dlouhá prázdná místa (3,7–9,5 s a 22,3–31,2 s). Rozdíl
+     * mezi „mimo obor" (oktávová chyba YIN), „příliš dlouhé" a „bez f0" vede
+     * k úplně jiné opravě, ale z exportu se nedal poznat.
+     *
+     * Do UI se to neplete: `showResult` kreslí jen tóny (`notes`), `summary`
+     * počítá z `notes`. Tenhle seznam je pro report a JSON. */
+    dropped,
     peak_dbfs: peakDbfs,           // špička nahrávky (dBFS)
     band,                          // šířka pásma nahrávky (měřeno jednou)
     notes, summary, refs: REFS,
