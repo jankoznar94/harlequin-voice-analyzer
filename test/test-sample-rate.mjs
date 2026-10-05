@@ -137,10 +137,39 @@ console.log('\n═══ Pasti, které stály čas (zafixované, ať se nevrát�
     `id3Size=${id3Size(u8([0x49, 0x44, 0x33, 4, 0, 0, 0, 0, 0, 34]))}`);
 }
 
+console.log('\n═══ WebM/Opus — formát, který si aplikace SAMA vyrábí ═══');
+{
+  /* ⚠️ REÁLNÁ VADA, kterou tenhle test hlídá: `MediaRecorder` v Chromiu dá
+   * `audio/webm;codecs=opus`, ale `sniffSampleRate` WebM neznal → NaN →
+   * `knownRate = false` → místo poměrového testu `bandCut` se použila přísná
+   * absolutní mez 4100 Hz. U tónu v nízké poloze (D3) vyšla mez 3961 Hz a
+   * aplikace vypsala „pásmo useknuto na ~3961 Hz — silná komprese, nahraj
+   * WAV" u souboru, který si sama vyrobila. Rada „nahraj WAV" je u appky,
+   * která WAV neumí nahrát, nesplnitelná. */
+  const webm = (() => {
+    // minimální EBML: hlavička 1A45DFA3 + Doctype „webm" + A_OPUS s OpusHead
+    const head = [0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81, 0x01];
+    const dt = Array.from('webm', c => c.charCodeAt(0));
+    const opus = Array.from('A_OPUS', c => c.charCodeAt(0));
+    const opusHead = Array.from('OpusHead', c => c.charCodeAt(0));
+    return u8([...head, ...dt, 0x00, 0x00, ...opus, 0x00, ...opusHead,
+      0x01, 0x02, 0x38, 0x01, 0x80, 0xbb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+  })();
+  check('WebM s Opusem → 48000 (Opus je vždy 48 kHz)',
+    sniffSampleRate(webm.buffer) === 48000, `přečteno ${sniffSampleRate(webm.buffer)}`);
+  check('WebM s Opusem se neplete s jinými formáty (není NaN→přísná cesta)',
+    sniffSampleRate(webm.buffer) === sniffSampleRate(webm.buffer) && sniffSampleRate(webm.buffer) > 0,
+    'musí vrátit ČÍSLO, ne NaN');
+  // WebM bez Opusu (např. VP8 video) → NaN, tedy bezpečná přísnější cesta
+  const webmVp8 = u8([0x1a, 0x45, 0xdf, 0xa3, ...Array.from('webm', c => c.charCodeAt(0)), 0, 0, ...Array.from('V_VP8', c => c.charCodeAt(0))]);
+  const v = sniffSampleRate(webmVp8.buffer);
+  check('WebM bez Opusu → NaN (bezpečný směr)', v !== v, `přečteno ${v}`);
+}
+
 console.log('\n═══ Neznámý/poškozený vstup → NaN (bezpečný směr) ═══');
 {
-  check('prázdné pole → NaN', sniffSampleRate(new ArrayBuffer(0)) !== sniffSampleRate(new ArrayBuffer(0)),
-    'NaN');
+  const prazdne = sniffSampleRate(new ArrayBuffer(0));
+  check('prázdné pole → NaN', prazdne !== prazdne, `přečteno ${prazdne}`);
   check('náhodné bajty → NaN', sniffSampleRate(u8([1, 2, 3, 4, 5, 6, 7, 8]).buffer) !== sniffSampleRate(u8([1, 2, 3, 4, 5, 6, 7, 8]).buffer));
   check('text → NaN', sniffSampleRate(u8(Array.from('ahoj svete, tohle neni audio').map(c => c.charCodeAt(0))).buffer) !== 0);
   // Poškozená hlavička NESMÍ vrátit nesmysl, který by pustil ořezaný zdroj.
