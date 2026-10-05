@@ -180,5 +180,73 @@ console.log('\n═══ Neznámý/poškozený vstup → NaN (bezpečný směr) 
     `přečteno ${got}`);
 }
 
-console.log(`\n═══ VÝSLEDEK: ${pass} prošlo, ${fail} selhalo ═══`);
+console.log('\n═══ WebM obecně — formát, který si aplikace SAMA vyrábí ═══');
+{
+  /* ⚠️ REÁLNÁ VADA (naměřeno, 1.0.32): `pickMime()` zkouší jako PRVNÍ
+   * `audio/webm;codecs=pcm`. `fromWebm` ale uměl jen `OpusHead`, takže kdykoli
+   * telefon vybral PCM, aplikace NEDOKÁZALA PŘEČÍST vzorkovací kmitočet SVÉHO
+   * VLASTNÍHO souboru → `knownRate = false` → přísná absolutní mez 4100 Hz →
+   * „pásmo useknuto na ~3527 Hz, silná komprese, nahraj WAV". To je tatáž
+   * třída vady jako WebM/Opus níž, jen jiný kodek — obecné pravidlo: nový
+   * formát, který aplikace umí VYROBIT, musí umět i PŘEČÍST.
+   *
+   * ⚠️ TVAR PRVKŮ JE OPSANÝ Z REÁLNÉHO SOUBORU, ne vymyšlený. `SamplingFrequency`
+   * má EBML ID **0xB5 = jeden bajt**, ne `42 B7`. Dřívější test si hlavičku
+   * postavil z `42 B7` — a procházel na formátu, který v praxi neexistuje,
+   * takže ověřoval neexistující opravu. Naměřeno na skutečném souboru
+   * (`ffmpeg` → Matroska, ověřeno `tools/diag-ebml.mjs`): hlavička obsahuje
+   * `0xB5 SamplingFrequency = 48000 (float64)`, `42 B7` v ní NENÍ. */
+  const ebmlFloat = (v, bajtu = 8) => {
+    const dv = new DataView(new ArrayBuffer(bajtu));
+    if (bajtu === 4) dv.setFloat32(0, v, false); else dv.setFloat64(0, v, false);
+    return [0xb5, 0x80 | bajtu, ...Array.from({ length: bajtu }, (_, i) => dv.getUint8(i))];
+  };
+  /* Struktura jako v reálném souboru: EBML → Segment → Tracks → TrackEntry
+   * → Audio → SamplingFrequency. */
+  const mk = (freqBytes, codec = 'A_PCM/INT/LIT') => {
+    const audio = u8([0x9f, 0x81, 0x01, ...freqBytes]);                 // Channels + freq
+    const entry = u8([0x83, 0x81, 0x02, 0xe1, 0x80 | audio.length, ...audio]);
+    const tracks = u8([0xae, 0x80 | entry.length, ...entry]);
+    const seg = u8([0x18, 0x53, 0x80, 0x67, 0x80 | tracks.length, ...tracks]);
+    /* Velikost hlavičky EBML se musí spočítat ze SKUTEČNÉHO obsahu (8 bajtů),
+     * ne opsat z reálného souboru — opsaná hodnota 0x9F = 31 bajtů posune
+     * parser mimo hlavičku a prvek se nenajde (naměřeno: test pak hlásil
+     * NaN i na správném kódu). */
+    const headBody = u8([0x42, 0x86, 0x81, 0x01, ...Array.from('webm', c => c.charCodeAt(0))]);
+    const head = u8([0x1a, 0x45, 0xdf, 0xa3, 0x80 | headBody.length, ...headBody]);
+    void codec;
+    return u8([...head, ...seg]);
+  };
+
+  check('WebM s PCM (float64) → kmitočet se PŘEČTE',
+    sniffSampleRate(mk(ebmlFloat(48000)).buffer) === 48000,
+    `přečteno ${sniffSampleRate(mk(ebmlFloat(48000)).buffer)}`);
+  check('WebM s PCM na 44,1 kHz → 44100',
+    sniffSampleRate(mk(ebmlFloat(44100)).buffer) === 44100,
+    `přečteno ${sniffSampleRate(mk(ebmlFloat(44100)).buffer)}`);
+  check('WebM s PCM (float32) → kmitočet se PŘEČTE',
+    sniffSampleRate(mk(ebmlFloat(48000, 4)).buffer) === 48000,
+    `přečteno ${sniffSampleRate(mk(ebmlFloat(48000, 4)).buffer)}`);
+
+  /* Kontrola, že test UMÍ SELHAT: kdyby se hledalo `42 B7` (což dřívější kód
+   * dělal), tenhle soubor by NEPŘEČETL — a to je přesně regrese, kterou tu
+   * hlídáme. Ověřuje se na datech, ne na dojmu. */
+  {
+    const b = mk(ebmlFloat(48000));
+    let najito42b7 = false;
+    for (let i = 0; i + 1 < b.length; i++) if (b[i] === 0x42 && b[i + 1] === 0xb7) najito42b7 = true;
+    check('kontrola testu: hlavička NEOBSAHUJE 42 B7 (starý kód by ji nepřečetl)',
+      !najito42b7 && sniffSampleRate(b.buffer) === 48000,
+      `42B7 v hlavičce: ${najito42b7}`);
+  }
+
+  // WebM bez SamplingFrequency (video) → NaN, tedy bezpečná přísnější cesta
+  const bezFreq = u8([0x1a, 0x45, 0xdf, 0xa3, ...Array.from('webm', c => c.charCodeAt(0)),
+    0, 0, ...Array.from('V_VP8', c => c.charCodeAt(0))]);
+  check('WebM bez SamplingFrequency → NaN (bezpečný směr)',
+    sniffSampleRate(bezFreq.buffer) !== sniffSampleRate(bezFreq.buffer),
+    `přečteno ${sniffSampleRate(bezFreq.buffer)}`);
+}
+
+console.log('\n═══ VÝSLEDEK: ' + pass + ' prošlo, ' + fail + ' selhalo ═══');
 process.exit(fail ? 1 : 0);

@@ -415,6 +415,16 @@ function showResult(res, samples, sampleRate, label, secs, blob) {
   $('r-unusable').classList.add('hidden');
   $('r-body').classList.remove('hidden');
 
+  /* Poznámka o spolehlivosti ringu — místo dřívějšího zahození celého
+   * výsledku. `r-band` je vlastní pruh, aby se nemíchala s výpadky ringu. */
+  const conf = ringConfidenceText(res);
+  if (conf) {
+    $('r-band').classList.remove('hidden');
+    $('r-band').innerHTML = conf;
+  } else {
+    $('r-band').classList.add('hidden');
+  }
+
   /* ── ukazatel 1: vyrovnanost ringu ─────────────────────────────────── */
   const ringPct = s.ring_consistency_pct;
   setKpi('k-ring', ringPct.toFixed(0) + ' %',
@@ -702,16 +712,10 @@ function unusableText(res) {
   }
   /* Nízký vzorkovací kmitočet NAHRÁVKY — výš než Nyquist v ní fyzicky není.
    *
-   * PROČ SE TO SEM PŘIDALO (reálná chyba, naměřeno): tenhle případ dřív
-   * propadal do poslední větve s radou „nahraj WAV nebo ve vysokém datovém
-   * toku". U záznamníku v telefonu je to rada, která nemůže pomoct — i WAV
-   * z téhož záznamníku má 16 kHz a ring z něj měřit nelze. Člověk pak hledá
-   * vadu v datovém toku, která tam není (přesně ta chyba, kterou jsme už
-   * jednou opravovali u hlášky o WAV).
-   *
-   * `s.low_rate` je spočítané z PŮVODNÍHO kmitočtu souboru — dekódování ho
-   * přepíše na 48 kHz, takže `res.sample_rate` o skutečné šířce pásma nic
-   * neříká (viz `sniffSampleRate` v app.js). */
+   * POZOR: tenhle případ se sem dostane jen tehdy, když se opravdu NEDALO
+   * změřit vůbec nic. Jakmile analýza tóny najde, výsledek se ukazuje
+   * s poznámkou o spolehlivosti (`ringConfidenceText`) — dřív se celý zahodil
+   * hláškou „Ring nelze měřit", i když šlo změřit výšku, hlasitost i ring. */
   if (s.low_rate) {
     const fr = s.file_rate;
     return '<strong>Ring nelze změřit — nahrávka má nízký vzorkovací kmitočet.</strong><br>' +
@@ -723,10 +727,46 @@ function unusableText(res) {
       'režim). Zkus v záznamníku nastavit kvalitu na 44,1 nebo 48 kHz, nebo nahrávej ' +
       'tlačítkem <strong>Nahrávat</strong> přímo v této aplikaci.';
   }
-  return '<strong>Ring nelze změřit.</strong><br>' + escapeHtml(s.reason) + '<br><br>' +
-    'Rozsah 2–4 kHz, kde se ring měří, je v této nahrávce potlačený. To dělá ' +
-    'silná komprese (nízký datový tok) nebo historický záznam. ' +
-    'Nahrávej WAV nebo ve vysokém datovém toku.';
+  return '<strong>Ani tóny se nepodařilo změřit.</strong><br>' + escapeHtml(s.reason) + '<br><br>' +
+    'Nahrávka je zřejmě poškozená nebo v ní není nic, co by se dalo analyzovat. ' +
+    'Zkus ji nahrát znovu, případně jiným záznamníkem.';
+}
+
+/**
+ * Poznámka o SPOLEHLIVOSTI ringu — místo dřívějšího zahození výsledku.
+ *
+ * ⚠️ PROČ (reálná vada): dřív `band.valid === false` znamenalo, že se celá
+ * analýza zahodí hláškou „Ring nelze měřit". Naměřeno na brick-wall ořezu
+ * téhož zpěvu přitom platí: tóny 68 → 65, hlasitost −15,9 → −16,0 dBFS,
+ * jitter 0,39 → 0,37 % (beze změny) a **SPR −15,03 → −14,51 dB** i při ořezu
+ * na 3,0 kHz. Ring se tedy měřit DÁ a odmítnout výsledek znamenalo nedat
+ * člověku ani to, co měřit šlo.
+ *
+ * Vrací null, když je pásmo v pořádku (pak se nic nezobrazuje).
+ */
+function ringConfidenceText(res) {
+  const s = res.summary;
+  if (!s.spr_confidence || s.spr_confidence === 'ok') return null;
+  const hz = s.band_hz;
+  const mez = hz === hz && hz > 0 ? `~${Math.round(hz)} Hz` : 'neznámá';
+  const hlava = '<strong>Ring je změřený jen orientačně.</strong><br>';
+
+  if (s.spr_quality === 'low_rate') {
+    return hlava + 'Nahrávka má nízký vzorkovací kmitočet, takže část pásma, ze které ' +
+      'se ring měří, v ní vůbec není. Výška, počet tónů i hlasitost platí — číslo ringu ' +
+      'ber s rezervou.';
+  }
+  if (s.spr_quality === 'unknown_cut') {
+    return hlava + 'Vzorkovací kmitočet souboru se nepodařilo přečíst z hlavičky, takže ' +
+      'se šířka pásma měřila přísněji, než bylo nutné. Naměřená mez pásma je ' + mez +
+      '. Výška, počet tónů i hlasitost platí; číslo ringu může být mírně nižší, než ' +
+      've skutečnosti je.';
+  }
+  return hlava + 'Pásmo 2–4 kHz, kde ring žije, je v této nahrávce potlačené' +
+    (s.spr_quality_note ? ` (${escapeHtml(s.spr_quality_note)})` : '') +
+    ` — naměřená mez pásma je ${mez}. ` +
+    'Výška, počet tónů i hlasitost platí; číslo ringu může být zkreslené. ' +
+    'Bývá to silná komprese (nízký datový tok) nebo historický záznam.';
 }
 
 /* ═══════════════════════════════════════ historie */
@@ -1254,6 +1294,13 @@ function makeMarkdown() {
   L.push(`${d.toLocaleString('cs-CZ')} · ${r.duration_s.toFixed(1)} s · ` +
     `${r.notes.length} tónů · obor ${r.fach}`, '');
   L.push('## Ring');
+  /* Poznámka o spolehlivosti (pásmo) patří i do reportu — bez ní by číslo
+   * vypadalo stejně platné jako u nahrávky s plným pásmem. */
+  if (!s.spr_unusable && s.spr_confidence && s.spr_confidence !== 'ok') {
+    L.push(`> **Ring je změřený jen orientačně** (${s.spr_quality}: ${s.spr_quality_note || '—'}). ` +
+      'Výška, počet tónů i hlasitost platí.');
+    L.push('');
+  }
   if (s.spr_unusable) {
     L.push(`**Ring nelze měřit:** ${s.reason}`);
   } else {

@@ -266,15 +266,49 @@ console.log('\n═══ 10. Pásmo se měří JEDNOU za nahrávku (regrese) ═
     res.band ? `měřitelné=${res.band.valid}, mez=${Math.round(res.band.limit)} Hz` : 'chybí');
   check('plné pásmo → SPR měřitelné', res.band.valid === true);
 
-  // useknuté pásmo → všechny tóny musí být označené jako neměřitelné
+  // useknuté pásmo → SPR se POŘÁD MĚŘÍ, jen s příznakem orientační spolehlivosti
+  //
+  // ⚠️ REÁLNÁ VADA, kterou tenhle test hlídá: dřív `band.valid === false`
+  // znamenalo, že se SPR nepočítá vůbec a analýza se zahodí hláškou „Ring nelze
+  // měřit". Naměřeno na brick-wall ořezu reálného zpěvu (68 tónů): tóny 68 → 65,
+  // hlasitost −15,9 → −16,0 dBFS a SPR −15,03 → −14,51 dB i při ořezu na
+  // 3,0 kHz. Ring se tedy měřit DÁ a odmítnutí výsledku bralo člověku i to, co
+  // měřit šlo. Slabý hlas bez ringu má dostat špatné skóre, ne hlášku.
   const tel = brickwall(sig, 3400);
-  const resTel = analyze(tel, SR, { fach: 'vse' });
-  check('useknuté pásmo → band.valid = false', resTel.band.valid === false, resTel.band.reason);
-  const anyMeasured = resTel.notes.some(n => n.spr_valid);
-  check('useknuté pásmo → žádný tón nemá SPR', !anyMeasured,
-    anyMeasured ? 'NĚKTERÉ TÓNY PROŠLY — chyba!' : '');
-  check('useknuté pásmo → summary hlásí unusable',
-    resTel.summary.spr_unusable === true);
+  const resTel = analyze(tel, SR, { fach: 'vse', fileRate: SR });
+  check('useknuté pásmo → band.measurable = false', resTel.band.measurable === false,
+    resTel.band.reason);
+  check('useknuté pásmo → příčina je pojmenovaná (quality=cuts)', resTel.band.quality === 'cut',
+    `quality=${resTel.band.quality}`);
+  const anyMeasured = resTel.notes.some(n => n.spr === n.spr);
+  check('useknuté pásmo → SPR se PŘESTO změřil', anyMeasured,
+    anyMeasured ? '' : 'SPR NENÍ — analýza výsledek zahodila, to je chyba!');
+  check('useknuté pásmo → summary NEHLÁSÍ unusable',
+    resTel.summary.spr_unusable === false);
+  check('useknuté pásmo → spolehlivost je označená jako orientační',
+    resTel.summary.spr_confidence === 'orientacni',
+    `confidence=${resTel.summary.spr_confidence}, quality=${resTel.summary.spr_quality}`);
+  check('useknuté pásmo → mez pásma je v summary (pro hlášku)',
+    resTel.summary.band_hz > 0, `band_hz=${resTel.summary.band_hz}`);
+  // a hlavně: MUSÍ to dát číslo, které se dá číst — ne NaN
+  check('useknuté pásmo → SPR medián je číslo', Number.isFinite(resTel.summary.spr_median),
+    `spr_median=${resTel.summary.spr_median}`);
+
+  /* ── NEPOZNANÝ vzorkovací kmitočet: přesně případ uživatele ────────────
+   * Nahrávka z tlačítka „Nahrávat" na telefonu, u které se kmitočet
+   * z hlavičky nepřečte (WebM/PCM) → přísná absolutní mez → „useknuto na
+   * ~3527 Hz". Tady se taky MUSÍ měřit (jen orientačně), protože jde o vadu
+   * ČTENÍ HLAVIČKY, ne o vadu nahrávky. */
+  const sigNez = brickwall(sig, 3700);            // mez pod 4100 Hz, kmitočet neznámý
+  const resNez = analyze(sigNez, SR, { fach: 'vse' });
+  check('neznámý kmitočet + nízká mez → quality=unknown_cut',
+    resNez.band.quality === 'unknown_cut', `quality=${resNez.band.quality}`);
+  check('neznámý kmitočet → SPR se PŘESTO změřil',
+    Number.isFinite(resNez.summary.spr_median), `spr_median=${resNez.summary.spr_median}`);
+  check('neznámý kmitočet → hlásí se orientační spolehlivost',
+    resNez.summary.spr_confidence === 'orientacni');
+  check('neznámý kmitočet → mez pásma jde do summary (hláška ji vypíše)',
+    resNez.summary.band_hz > 0, `band_hz=${resNez.summary.band_hz}`);
 }
 
 console.log('\n═══ 11. Segmentace not — ground truth (regrese) ═══');

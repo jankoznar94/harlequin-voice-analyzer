@@ -130,12 +130,105 @@ function fromMpegAudio(b) {
   return table[rateIdx] ?? NaN;
 }
 
-/** Přečte kmitočet z WebM/Matroska (A_OPUS → OpusHead). */
+/* ── EBML (WebM/Matroska): vzorkovací kmitočet z reálné struktury ─────────
+ *
+ * ⚠️ PROČ SE TO PROCHÁZÍ STROMEM, A NE HLEDÁ BAJTY (naměřeno, chyba):
+ * `SamplingFrequency` má EBML ID **0xB5** a v souboru je zapsané jako JEDEN
+ * bajt `B5` (EBML ID nesou svůj délkový marker v sobě). Hledání dvojice bajtů
+ * `42 B7` — což by byl čtyřbajtový zápis téhož čísla — v souboru NENAJDE NIC
+ * z hlavičky; první výskyt ležel až v audio datech na offsetu 263716. Naměřeno
+ * na skutečném souboru (`ffmpeg` → Matroska, `diag-ebml.mjs`): hlavička má
+ * `0xB5 SamplingFrequency = 48000 (float64)`, zatímco `42 B7` se v hlavičce
+ * nevyskytuje vůbec. Test, který si hlavičku postavil z `42 B7`, proto
+ * procházel na formátu, který v praxi neexistuje — a oprava nic neopravila.
+ *
+ * Prochází se proto skutečná struktura: EBML → Segment → Tracks → TrackEntry
+ * → Audio → SamplingFrequency. Do `Cluster` se NEVSTUPUJE (tam jsou audio
+ * data, ve kterých se dá najít kdeco), takže se čte jen hlavička.
+ */
+const EBML_SEGMENT = 0x18538067;
+const EBML_TRACKS = 0x1654ae6b;
+const EBML_TRACK_ENTRY = 0xae;
+const EBML_AUDIO = 0xe1;
+const EBML_SAMPLING_FREQ = 0xb5;
+
+/** Přečte EBML ID na offsetu (délka je v prvním bajtu) → { id, bytes }. */
+function ebmlId(b, o) {
+  if (o >= b.length) return null;
+  const f = b[o];
+  let n = 1;
+  if (f & 0x80) n = 1;
+  else if (f & 0x40) n = 2;
+  else if (f & 0x20) n = 3;
+  else if (f & 0x10) n = 4;
+  else return null;
+  if (o + n > b.length) return null;
+  let id = 0;
+  for (let i = 0; i < n; i++) id = id * 256 + b[o + i];
+  return { id, bytes: n };
+}
+
+/** Přečte EBML velikost (vint) → { size, bytes, unknown }. */
+function ebmlSize(b, o) {
+  if (o >= b.length) return null;
+  const f = b[o];
+  let n = 0;
+  for (let bit = 7; bit >= 0; bit--) if (f & (1 << bit)) { n = 8 - bit; break; }
+  if (!n || o + n > b.length) return null;
+  let v = f & ((1 << (8 - n)) - 1);
+  for (let k = 1; k < n; k++) v = v * 256 + b[o + k];
+  return { size: v, bytes: n, unknown: v === Math.pow(2, 7 * n) - 1 };
+}
+
+/**
+ * Projde EBML a vrátí `SamplingFrequency` zvukové stopy (Hz), nebo NaN.
+ *
+ * Zvládá i průběžně zapisované soubory (`MediaRecorder`): tam má Segment
+ * i Cluster velikost „unknown", takže se do Clusteru vůbec nevstupuje a hledá
+ * se jen v hlavičce — kmitočet je vždy před prvními zvukovými daty.
+ */
+function findSamplingFrequency(b) {
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const end = b.length;
+  let out = NaN;
+
+  const walk = (o, limite, depth) => {
+    if (depth > 6) return;
+    while (o < limite && !(out === out)) {
+      const id = ebmlId(b, o);
+      if (!id) return;
+      const sz = ebmlSize(b, o + id.bytes);
+      if (!sz) return;
+      const dataOff = o + id.bytes + sz.bytes;
+      const dataEnd = sz.unknown ? limite : Math.min(limite, dataOff + sz.size);
+
+      if (id.id === EBML_SAMPLING_FREQ) {
+        const len = sz.size;
+        if ((len === 4 || len === 8) && dataOff + len <= b.length) {
+          const v = len === 4 ? dv.getFloat32(dataOff, false) : dv.getFloat64(dataOff, false);
+          if (v >= 1000 && v <= 384000) { out = Math.round(v); return; }
+        }
+      } else if (id.id === EBML_SEGMENT || id.id === EBML_TRACKS
+        || id.id === EBML_TRACK_ENTRY || id.id === EBML_AUDIO) {
+        /* Do Clusteru (0x1F43B675) se záměrně nevstupuje — tam jsou zvuková
+         * data a hledání v nich by mohlo vrátit náhodný bajt jako kmitočet. */
+        walk(dataOff, dataEnd, depth + 1);
+      }
+      if (sz.unknown) return;               // dál se v neznámé délce pokračovat nedá
+      o = dataEnd;
+    }
+  };
+  walk(0, end, 0);
+  return out;
+}
+
+/** Přečte kmitočet z WebM/Matroska — Opus je vždy 48 kHz, jinak z EBML. */
 function fromWebm(b) {
   /* ⚠️ PROČ TO TU JE (reálná vada): tohle je formát, který si aplikace SAMA
-   * vyrábí (`MediaRecorder` v Chromiu dá `audio/webm;codecs=opus`). Bez téhle
-   * větve vracel `sniffSampleRate` NaN — a nahrávka z aplikace tak byla jediný
-   * formát, o kterém appka nevěděla, jaký má vzorkovací kmitočet. Následky:
+   * vyrábí (`MediaRecorder` v Chromiu dá `audio/webm;codecs=opus`, ale
+   * `pickMime()` zkouší jako první PCM). Bez téhle větve vracel
+   * `sniffSampleRate` NaN — a nahrávka z aplikace tak byla jediný formát,
+   * o kterém appka nevěděla, jaký má vzorkovací kmitočet. Následky:
    *  - `low_rate` se nikdy nespustilo (podmínka `fileRate/2 < 4100` nemohla
    *    vyjít), takže se nikdy neobjevila správná rada „nastav kvalitu záznamu";
    *  - místo poměrového testu (`bandCut`) se použila PŘÍSNÁ absolutní mez
@@ -145,10 +238,8 @@ function fromWebm(b) {
    *    neumí nahrát, nesplnitelná.
    *
    * Opus JE vždy 48 kHz (kodek pracuje na 48 kHz a při dekódování převzorkuje),
-   * takže se kmitočet nečte — hlásí se rovnou 48000. Je to stejná logika jako
-   * u Ogg/OpusHead níž. Ostatní kodexy ve WebM (Vorbis, PCM) se tu NEŘEŠÍ a
-   * vrací NaN: volající se pak chová jako dřív (přísnější cesta), což je
-   * bezpečný směr — radši nezměřit než pustit ořezaný zdroj. */
+   * takže se u něj kmitočet nečte — hlásí se rovnou 48000. U ostatních kodexů
+   * (PCM, Vorbis) se čte z EBML prvku `SamplingFrequency`. */
   const findBytes = (needle) => {
     const n = needle.length;
     outer: for (let i = 0; i + n <= b.length; i++) {
@@ -158,7 +249,7 @@ function fromWebm(b) {
     return -1;
   };
   if (findBytes('OpusHead') >= 0) return 48000;
-  return NaN;
+  return findSamplingFrequency(b);
 }
 
 /**
