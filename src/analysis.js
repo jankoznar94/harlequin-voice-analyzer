@@ -1738,6 +1738,29 @@ export function analyze(samples, sampleRate, opts = {}) {
   });
   progress(0.35, 'Dělím nahrávku na tóny…');
 
+  /* Mezery v grafu — a proč tam jsou.
+   *
+   * PROČ TO TU JE (reálná stížnost): v grafu ringu bylo „mnoho mezer, i když
+   * tam zcela evidentně tóny jsou" — a `dropped` hlásil nula. Graf kreslí JEN
+   * tóny, takže každé prázdné místo je díra; `dropped` ale zachytí jen úseky,
+   * které segmentace vytvořila a pak vyřadila. Ostatní díry vznikaly tiše.
+   *
+   * Naměřeno na reálné nahrávce (zpev.wav): 8 mezer v grafu, `dropped` nula —
+   * a příčiny se RŮZNÍ (viz `tools/diag-mezery-povaha.mjs`):
+   *   - ticho (pauza, nadechnutí) — hlásit se NEMÁ, to žádná díra není
+   *   - signál, ale YIN v něm výšku nenašel
+   *   - výška nalezena, ale segmentace z ní tón neudělala (krátký úsek,
+   *     slitá fráze) — tohle je nejčastější a ukazuje na segmentaci
+   *
+   * Mezera se proto nebere „po rámcích", ale jako ROZPĚTÍ MEZI DVĚMA TÓNY —
+   * to je přesně to prázdné místo, které uživatel v grafu vidí. Uvnitř se
+   * změří tři věci: podíl rámců pod prahem (ticho), s výškou (YIN ji našel)
+   * a bez výšky. Podle nich se určí příčina.
+   *
+   * ⚠️ Nehlásit mezeru, která je už v `dropped` jako „mimo obor" nebo „příliš
+   * dlouhé" — jinak by se jeden problém objevil dvakrát pod dvěma jmény.
+   * (To je i důvod, proč se počítá až tady: `kept` i `dropped` už jsou hotové.) */
+
   // Segmentace: hysterezní čítač s ukotvenou notou. Nahradil starou segmentaci,
   // která na legatu a rychlých pasážích slévala noty do jedné (8 not → 1 tón,
   // 16 not → 1 tón) a na skocích přes oktávu je naopak ztrácela. Detaily v
@@ -1758,6 +1781,56 @@ export function analyze(samples, sampleRate, opts = {}) {
     else if (med < loF || med > hiF) dropped.push({ t0: p.t0, t1: p.t1, why: `${hzToNote(med)} mimo ${fach}` });
     else kept.push(p);
   }
+
+  /* Mezery v grafu — a proč tam jsou. */
+  const minGapS = opts.mezeraMinS ?? 0.6;
+  const mezeryGrafu = [];
+  {
+    const hop = Math.round(0.010 * sampleRate);
+    const frameSize = 2048;
+    const rmsMin = 0.008;                  // stejný prah jako v `pitchTrack`
+    const rozsah = kept.map(p => [p.t0, p.t1]).sort((a, b) => a[0] - b[0]);
+    const useky = [];
+    let konec = 0;
+    for (const [a, b] of rozsah) {
+      if (a - konec >= minGapS) useky.push([konec, a]);
+      konec = Math.max(konec, b);
+    }
+    if (duration - konec >= minGapS) useky.push([konec, duration]);
+
+    for (const [a, b] of useky) {
+      let ticho = 0, sVyskou = 0, bezVysky = 0, cnt = 0;
+      for (let t = a; t < b; t += 0.010) {
+        const start = Math.round(t * sampleRate);
+        let rms = 0;
+        for (let j = start; j < Math.min(samples.length, start + frameSize); j++) rms += samples[j] * samples[j];
+        rms = Math.sqrt(rms / frameSize);
+        cnt++;
+        if (rms < rmsMin) { ticho++; continue; }
+        const fi = Math.round(t / 0.010);
+        if (fi >= 0 && fi < f0.length && f0[fi] > 0) sVyskou++; else bezVysky++;
+      }
+      if (!cnt) continue;
+      /* Většina pod prahem = pauza. Nadechnutí se hlásit nemá — z reportu by
+       * se stalo smetiště a uživatel by hledal chybu v pauze. */
+      if (ticho / cnt > 0.5) continue;
+      const zbyva = cnt - ticho;
+      const why = (sVyskou / (zbyva || 1)) >= 0.25
+        ? 'výška nalezena, ale tón z ní nevznikl'
+        : 'signál bez nalezené výšky';
+      /* Překryv s už hlášeným vyřazením — nezdvojovat.
+       * ⚠️ Musí to být PŘEKRYV, ne „záznam mezeru obsahuje". `mimo obor` má
+       * jiné hranice než mezera vypočtená mezi tóny (úsek začíná jinde) a
+       * s ostrým `t1 >= b` se filtr mine — pak se objeví dvakrát tentýž
+       * problém pod dvěma jmény (naměřeno: „mimo tenor 1,8–3,4" i „výška
+       * nalezena, ale tón z ní nevznikl 1,4–3,8" na tomtéž místě). */
+      const uz = dropped.some(d => Math.min(d.t1, b) - Math.max(d.t0, a) > 0.05);
+      if (uz) continue;
+      mezeryGrafu.push({ t0: a, t1: b, why });
+    }
+  }
+  for (const m of mezeryGrafu) dropped.push(m);
+  dropped.sort((a, b) => a.t0 - b.t0);
 
   progress(0.45, `Měřím ${kept.length} tónů…`);
 
