@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Hlas">
-<link rel="stylesheet" href="src/style.css?v=27">
+<link rel="stylesheet" href="src/style.css?v=28">
 </head>
 <body>
 
@@ -153,6 +153,7 @@
       <div class="live-num"><span class="live-k">SPR teď</span><strong id="lv-spr">—</strong></div>
       <div class="live-num"><span class="live-k">SPR medián</span><strong id="lv-sprmed">—</strong></div>
       <div class="live-num"><span class="live-k">FHE</span><strong id="lv-fhe">—</strong></div>
+      <div class="live-num"><span class="live-k">délka traktu</span><strong id="lv-vtl">—</strong></div>
       <div class="live-num"><span class="live-k">úroveň</span><strong id="lv-lvl">—</strong></div>
       <div class="live-num"><span class="live-k">rozptyl ladění</span><strong id="lv-spread">—</strong></div>
       <div class="live-num"><span class="live-k">zpíváno</span><strong id="lv-pct">—</strong></div>
@@ -177,6 +178,10 @@
             takže leží níž. Právě proto se s literaturou srovnává to starší.</li>
         <li><strong>Prohlížeč utlumí zvuk</strong>, když přepneš na jinou kartu nebo
             zhasne displej. Měření se v tu chvíli zastaví — není to vada aplikace.</li>
+        <li><strong>Délka traktu</strong> (poloha hrtanu) se ukáže až po chvíli
+            držení tónu — počítá se z oken od jeho začátku, ne z jednoho rámce.
+            Vysoko metrika často nemá co měřit, takže zůstane „—“; srovnávat ji
+            lze mezi svými nahrávkami, ne s tabulkami.</li>
       </ul>
     </details>
   </section>
@@ -405,6 +410,6 @@
 
 <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
-<script type="module" src="src/app.js?v=27"></script>
+<script type="module" src="src/app.js?v=28"></script>
 </body>
 </html>
