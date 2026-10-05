@@ -493,8 +493,8 @@ function showResult(res, samples, sampleRate, label, secs, blob) {
   } else {
     const n = s.vtl_n, z = s.vtl_z_tonek;
     const cls = n >= 5 ? 'ok' : n >= 3 ? 'mid' : 'none';
-    setKpi('k-vtl', s.vtl_cm.toFixed(1), 
-      `cm · z ${n} ${czPlural(n, 'tónu', 'tónů', 'tónů')}${z > n ? ` z ${z}` : ''}`,
+    setKpi('k-vtl', s.vtl_cm.toFixed(1),
+      `cm · ${n} ${czPlural(n, 'tón', 'tóny', 'tónů')} ze ${z}`,
       cls, 'k-vtl-d',
       `Odhad z rozestupu formantů (dF ${Math.round(s.vtl_dF_hz)} Hz). ` +
       'Nižší hrtan = delší trakt = formanty níž a blíž k sobě, a naopak. ' +
@@ -504,7 +504,7 @@ function showResult(res, samples, sampleRate, label, secs, blob) {
       'Číslo je záměrně RELATIVNÍ: srovnávej ho mezi vlastními nahrávkami, ' +
       'ne s tabulkami. Absolutní hodnota je posunutá zhruba o 1,5 cm nahoru, ' +
       'protože vzorec předpokládá rovnoměrnou trubici. ' +
-      (n < z ? `Vyřazeno ${z - n} ${czPlural(z - n, 'tón', 'tóny', 'tónů')}, u kterých formanty vyšly mimo fyziologický rozsah.` : ''));
+      (n < z ? `Vyřazeno mimo fyziologický rozsah: ${z - n} ${czPlural(z - n, 'tón', 'tóny', 'tónů')}.` : ''));
   }
 
   /* ── ukazatel 4: kolik tónů se změřilo ─────────────────────────────── */
@@ -1286,12 +1286,12 @@ function makeMarkdown() {
      * srovnával s tabulkami a divil se, že mu trakt „vyrostl" o 1,5 cm. */
     if (s.vtl_cm > 0) {
       L.push(`- Délka vokálního traktu: **${s.vtl_cm.toFixed(1)} cm** ` +
-        `(z ${s.vtl_n} ${czPlural(s.vtl_n, 'tónu', 'tónů', 'tónů')}, dF ${Math.round(s.vtl_dF_hz)} Hz)` +
+        `(${s.vtl_n} ${czPlural(s.vtl_n, 'tón', 'tóny', 'tónů')} ze ${s.vtl_z_tonek}, dF ${Math.round(s.vtl_dF_hz)} Hz)` +
         (s.vtl_n < 5 ? ' — z mála tónů, jen orientační' : ''));
       L.push('  (Relativní údaj: srovnávej mezi vlastními nahrávkami, ne s tabulkami. ' +
         'Absolutní hodnota je posunutá ~1,5 cm nahoru — vzorec předpokládá rovnoměrnou trubici.)');
       if (s.vtl_z_tonek > s.vtl_n) {
-        L.push(`  (Vyřazeno ${s.vtl_z_tonek - s.vtl_n} tónů, u kterých formanty vyšly mimo fyziologický rozsah.)`);
+        L.push(`  (Vyřazeno mimo fyziologický rozsah: ${s.vtl_z_tonek - s.vtl_n} ${czPlural(s.vtl_z_tonek - s.vtl_n, 'tón', 'tóny', 'tónů')}.)`);
       }
     }
   }
