@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Hlas">
-<link rel="stylesheet" href="src/style.css?v=35">
+<link rel="stylesheet" href="src/style.css?v=36">
 </head>
 <body>
 
@@ -206,68 +206,19 @@
     <div id="r-band" class="warn-soft hidden"></div>
 
     <div id="r-body">
-      <p class="verdict" id="r-verdict"></p>
+      <!-- POŘADÍ SEKCE (na přání uživatele): NEJDŘÍV přehrávač s grafy,
+           teprve POD NIMI čísla, vysvětlivky a tabulka.
 
-      <div class="kpis">
-        <div class="kpi wide">
-          <span class="kpi-v" id="k-ring">—</span>
-          <span class="kpi-l">Ring drží na tolika tónech</span>
-          <span class="kpi-s" id="k-ring-s"></span>
-          <p class="kpi-d" id="k-ring-d"></p>
-        </div>
-        <div class="kpi wide">
-          <span class="kpi-v" id="k-level">—</span>
-          <span class="kpi-l">Síla hlasu</span>
-          <span class="kpi-s" id="k-level-s"></span>
-          <p class="kpi-d" id="k-level-d"></p>
-        </div>
-        <div class="kpi wide">
-          <span class="kpi-v" id="k-fhe">—</span>
-          <span class="kpi-l">Barva hlasu</span>
-          <span class="kpi-s" id="k-fhe-s"></span>
-          <p class="kpi-d" id="k-fhe-d"></p>
-        </div>
-        <div class="kpi wide">
-          <span class="kpi-v" id="k-f1">—</span>
-          <span class="kpi-l">Ladění vysokých tónů</span>
-          <span class="kpi-s" id="k-f1-s"></span>
-          <p class="kpi-d" id="k-f1-d"></p>
-        </div>
-        <div class="kpi wide">
-          <span class="kpi-v" id="k-vtl">—</span>
-          <span class="kpi-l">Délka vokálního traktu</span>
-          <span class="kpi-s" id="k-vtl-s"></span>
-          <p class="kpi-d" id="k-vtl-d"></p>
-        </div>
-        <div class="kpi wide">
-          <span class="kpi-v" id="k-trend">—</span>
-          <span class="kpi-l">Průběh ringu v dlouhých tónech</span>
-          <span class="kpi-s" id="k-trend-s"></span>
-          <p class="kpi-d" id="k-trend-d"></p>
-        </div>
-        <div class="kpi wide">
-          <span class="kpi-v" id="k-count">—</span>
-          <span class="kpi-l">Změřeno tónů</span>
-          <span class="kpi-s" id="k-count-s"></span>
-          <p class="kpi-d" id="k-count-d"></p>
-        </div>
-      </div>
+           PROČ: kdo si nahrávku pustí, chce hlavně slyšet místo, kde se ring
+           ztrácí, a vidět ho v grafu. Než se k přehrávači proklikal přes sedm
+           dlaždic s čísly, musel posouvat stránkou — a při posouvání mu navíc
+           utekl graf, ve kterém to místo hledá. Souhrn a vysvětlivky proto
+           stojí až za přehrávačem: čtou se jednou, kdežto přehrávač
+           s ukazatelem se používá pořád.
 
-      <div class="note">
-        <strong>Jak to číst:</strong> „Ring drží" znamená, že se tón svou barvou
-        neodchyluje od ostatních — přesně to je cíl, protože ring má být na
-        <em>každém</em> tónu. „Síla hlasu" říká, jak je na tom hlas jako takový,
-        ve srovnání s tím, co je známo o zpěvácích obecně. Ty dvě věci mohou být
-        rozdílné: rovnoměrně slabý hlas má ring „držící", ale slabý.
-      </div>
-
-      <p class="warn-soft hidden" id="r-dropouts"></p>
-
-      <h3>Kde se ring ztrácí</h3>
-      <p class="hint">Každý sloupec je jeden tón. Vodorovná osa je <strong>čas
-         v nahrávce</strong> — najdi v ní přesné místo, kde je sloupec červený,
-         a vrať se tam.</p>
-
+           POZOR — pořadí v HTML je ZÁVAZNÉ pro každý test a sondu, které hledají
+           sousedy panelu grafů (`nextElementSibling` z `.chart-panes`) — viz
+           `test/test-ui-wiring.mjs` a `tools/check-poradi-browser.mjs`. -->
       <h3>Průběh nahrávky</h3>
       <p class="hint">Grafy jsou v záložkách, aby se nemuselo posouvat stránkou.
          Ukazatel jde s nahrávkou ve všech záložkách — přepínat se dá i za
@@ -345,7 +296,64 @@
           </div>
         </div>
       </div>
+      <p class="verdict" id="r-verdict"></p>
 
+      <div class="kpis">
+        <div class="kpi wide">
+          <span class="kpi-v" id="k-ring">—</span>
+          <span class="kpi-l">Ring drží na tolika tónech</span>
+          <span class="kpi-s" id="k-ring-s"></span>
+          <p class="kpi-d" id="k-ring-d"></p>
+        </div>
+        <div class="kpi wide">
+          <span class="kpi-v" id="k-level">—</span>
+          <span class="kpi-l">Síla hlasu</span>
+          <span class="kpi-s" id="k-level-s"></span>
+          <p class="kpi-d" id="k-level-d"></p>
+        </div>
+        <div class="kpi wide">
+          <span class="kpi-v" id="k-fhe">—</span>
+          <span class="kpi-l">Barva hlasu</span>
+          <span class="kpi-s" id="k-fhe-s"></span>
+          <p class="kpi-d" id="k-fhe-d"></p>
+        </div>
+        <div class="kpi wide">
+          <span class="kpi-v" id="k-f1">—</span>
+          <span class="kpi-l">Ladění vysokých tónů</span>
+          <span class="kpi-s" id="k-f1-s"></span>
+          <p class="kpi-d" id="k-f1-d"></p>
+        </div>
+        <div class="kpi wide">
+          <span class="kpi-v" id="k-vtl">—</span>
+          <span class="kpi-l">Délka vokálního traktu</span>
+          <span class="kpi-s" id="k-vtl-s"></span>
+          <p class="kpi-d" id="k-vtl-d"></p>
+        </div>
+        <div class="kpi wide">
+          <span class="kpi-v" id="k-trend">—</span>
+          <span class="kpi-l">Průběh ringu v dlouhých tónech</span>
+          <span class="kpi-s" id="k-trend-s"></span>
+          <p class="kpi-d" id="k-trend-d"></p>
+        </div>
+        <div class="kpi wide">
+          <span class="kpi-v" id="k-count">—</span>
+          <span class="kpi-l">Změřeno tónů</span>
+          <span class="kpi-s" id="k-count-s"></span>
+          <p class="kpi-d" id="k-count-d"></p>
+        </div>
+      </div>
+      <div class="note">
+        <strong>Jak to číst:</strong> „Ring drží" znamená, že se tón svou barvou
+        neodchyluje od ostatních — přesně to je cíl, protože ring má být na
+        <em>každém</em> tónu. „Síla hlasu" říká, jak je na tom hlas jako takový,
+        ve srovnání s tím, co je známo o zpěvácích obecně. Ty dvě věci mohou být
+        rozdílné: rovnoměrně slabý hlas má ring „držící", ale slabý.
+      </div>
+      <p class="warn-soft hidden" id="r-dropouts"></p>
+      <h3>Kde se ring ztrácí</h3>
+      <p class="hint">Každý sloupec je jeden tón. Vodorovná osa je <strong>čas
+         v nahrávce</strong> — najdi v ní přesné místo, kde je sloupec červený,
+         a vrať se tam.</p>
       <details class="tips">
         <summary>Naměřené hodnoty a čísla (pro podrobné srovnání)</summary>
         <div class="tbl-wrap">
@@ -425,6 +433,6 @@
 
 <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
-<script type="module" src="src/app.js?v=35"></script>
+<script type="module" src="src/app.js?v=36"></script>
 </body>
 </html>
