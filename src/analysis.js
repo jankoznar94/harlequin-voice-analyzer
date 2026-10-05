@@ -234,6 +234,59 @@ export const SPR_HOP_DIV = 4;
 /** Percentil, kterým se z rámců bere výsledné číslo SPR. */
 export const SPR_QUANTILE = 0.90;
 
+/* ── ČASOVÁ ŘADA SPR UVNITŘ TÓNU ───────────────────────────────────────────
+ *
+ * PROČ: dlouhý držený tón měl v grafu JEDNU hodnotu, i když je to pět vteřin
+ * a ring se v jejich průběhu může měnit (naměřeno na reálném zpěvu: IQR uvnitř
+ * tónu 6,45 dB i po vyhlazení, rozkmit až 25 dB surově). Uživatel neměl jak
+ * poznat, jestli ring drží od náběhu do konce, nebo na konci padá — což je
+ * přesně to, co zpěvák potřebuje vidět.
+ *
+ * Měření je stejné jako číslo tónu (`spr_novy` = p90 přes okna 4096), jen se
+ * dělá v klouzavém okně podél tónu, takže výsledná křivka je s tím číslem
+ * srovnatelná: medián řady odpovídá p90 přes celý tón.
+ *
+ * ⚠️ Okno se posouvá po rámcích (21 ms), ne po 100 ms. Při hrubém kroku se
+ * mezi okny mění kontext natolik, že hodnota poskakuje — ověřeno na VTL.
+ * ⚠️ Poslední okna se NESMÍ doplňovat nulami (nula je hrana, ne „žádný
+ * signál“) — proto se řada prostě ukončí, dokud se okno do tónu nevejde.
+ */
+export const SPR_SERIE_WIN_S = 0.20;   // délka klouzavého okna (s)
+export const SPR_SERIE_STEP_S = 0.05;  // krok řady (s)
+/** Pod touhle délkou tónu se řada nepočítá — 3 body nic neukážou. */
+export const SPR_SERIE_MIN_DUR = 0.6;
+
+/**
+ * Časová řada SPR uvnitř jednoho tónu.
+ *
+ * @param {Float64Array} x úsek tónu (celý, včetně náběhu a dokmitu)
+ * @param {number} sr vzorkovací kmitočet
+ * @param {object} [opts] winS, stepS
+ * @returns {Array<[number, number]>} dvojice [čas od začátku tónu (s), SPR dB]
+ */
+export function sprSeries(x, sr, opts = {}) {
+  const winS = opts.winS ?? SPR_SERIE_WIN_S;
+  const stepS = opts.stepS ?? SPR_SERIE_STEP_S;
+  const win = Math.round(winS * sr);
+  const step = Math.max(128, Math.round(stepS * sr));
+  if (x.length < win || win < SPR_NFFT) return [];
+  const core = new SprCore(sr, SPR_NFFT);
+  const inner = Math.max(128, Math.round(SPR_NFFT / SPR_HOP_DIV));
+  const out = [];
+  for (let s = 0; s + win <= x.length; s += step) {
+    const seg = x.subarray(s, s + win);
+    const tmp = [];
+    for (let u = 0; u + SPR_NFFT <= seg.length; u += inner) {
+      const v = core.of(seg.subarray(u, u + SPR_NFFT));
+      if (v === v) tmp.push(v);
+    }
+    /* Když v okně není dost rámců, bod se vynechá — dopočítat ho z menšího
+     * počtu vzorků by znamenalo měřit něco jiného než zbytek křivky. */
+    if (tmp.length >= 2) out.push([s / sr, percentile(tmp, SPR_QUANTILE)]);
+  }
+  return out;
+}
+
 /**
  * SPR z výkonového spektra, BEZ alokace polí.
  *
@@ -1985,6 +2038,15 @@ export function analyze(samples, sampleRate, opts = {}) {
       // měřené číslo týká něčeho jiného než „drženého tónu" — ať to UI přizná
       nm.span_cents = p.spanCents;
       nm.is_glide = p.isGlide;
+      /* Časová řada SPR uvnitř tónu — ať je v grafu vidět, jak ring drží
+       * v PRŮBĚHU tónu, ne jen jedno číslo za celý úsek. U dlouhých tónů jde
+       * o desítky bodů; počítá se proto jen tam, kde je co kreslit. */
+      if (p.t1 - p.t0 >= SPR_SERIE_MIN_DUR) {
+        const j0 = Math.max(0, Math.round(p.t0 * sampleRate));
+        const j1 = Math.min(samples.length, Math.round(p.t1 * sampleRate));
+        const ser = sprSeries(samples.subarray(j0, j1), sampleRate);
+        if (ser.length) nm.spr_series = ser;
+      }
       notes.push(nm);
     }
     doneNoteSecs += Math.max(0, p.t1 - p.t0);
@@ -2141,6 +2203,33 @@ function measureNote(samples, sampleRate, times, f0raw, idx, t0, t1, band, fach 
     vib_rate: vib.rate, vib_extent_cents: vib.extent,
     ring_ok: false, ring_dropout: false,
   };
+}
+
+/**
+ * Průběh ringu v dlouhém tónu: medián SPR v první a poslední čtvrtině.
+ *
+ * PROČ: jedno číslo za tón neřekne, jestli ring drží od náběhu do konce, nebo
+ * na konci padá. Naměřeno na reálném zpěvu: uvnitř tónu se SPR hýbe s IQR
+ * 6,45 dB a pokles za tón dosahuje až 13,7 dB — přitom tón jako celek vyjde
+ * jako „ring OK". Graf to ukáže, ale UI i report to musí říct slovem.
+ *
+ * Bere se medián (ne průměr): v náběhu je řada rozkmitaná a průměr by ji
+ * přitáhl k sobě, takže by se pokles zdál menší, než je.
+ *
+ * @returns {null|{drop_db:number,start_db:number,end_db:number,span_db:number,n:number}}
+ */
+export function ringTrend(note) {
+  const ser = note?.spr_series;
+  if (!ser || ser.length < 4) return null;
+  const q = (from, to) => {
+    const v = ser.slice(from, to).map(p => p[1]).sort((a, b) => a - b);
+    return v.length ? v[v.length >> 1] : NaN;
+  };
+  const k = Math.max(1, Math.floor(ser.length / 4));
+  const start = q(0, k), end = q(ser.length - k);
+  if (!(start === start) || !(end === end)) return null;
+  const all = ser.map(p => p[1]);
+  return { drop_db: end - start, start_db: start, end_db: end, span_db: Math.max(...all) - Math.min(...all), n: ser.length };
 }
 
 /**
@@ -2358,6 +2447,25 @@ export function ringAnalysis(notes, opts = {}) {
     notes_with_ring: good,
     notes_missing_ring: usable.length - good,
     ring_consistency_pct: 100 * good / usable.length,
+    /* Průběh ringu v dlouhých tónech — jedno číslo za tón neřekne, jestli ring
+     * drží, nebo na konci padá. Počítá se z tónů, které mají časovou řadu;
+     * `usable` je tu správná množina (vyřazené tiché/úryvky by do trendu
+     * neměly mluvit stejně jako zpívané tóny). Práh 3 dB: naměřený rozptyl
+     * mezi tóny je ±2 dB, takže menší změna je šum, ne nález. */
+    ...(() => {
+      const trends = usable.map(n => ({ n, tr: ringTrend(n) })).filter(x => x.tr);
+      const drop = trends.filter(x => x.tr.drop_db <= -3)
+        .sort((a, b) => a.tr.drop_db - b.tr.drop_db)
+        .map(x => ({ note: x.n.note, t: x.n.t_start, dur: x.n.dur, drop_db: x.tr.drop_db }));
+      return {
+        ring_trend_tones: trends.length,
+        ring_trend_drops: drop,
+        ring_trend_min_db: drop.length ? drop[0].drop_db : null,
+        ring_trend_median_span: trends.length
+          ? trends.map(x => x.tr.span_db).sort((a, b) => a - b)[trends.length >> 1]
+          : null,
+      };
+    })(),
     dropout_notes: [...new Set(dropouts.map(d => d.note))].sort(),
     dropouts,
     // orientační srovnání s literaturou — NENÍ to verdikt

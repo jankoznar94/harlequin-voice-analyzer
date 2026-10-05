@@ -114,8 +114,20 @@ export function sprGeom(w, h, notes, summary, offX = 0) {
   const meas = notes.filter(n => n.spr === n.spr);
   if (!meas.length) return null;
   const vals = meas.map(n => n.spr);
+  /* Rozsah osy musí pojmout i křivky dlouhých tónů — jinak by se jejich
+   * krajní hodnoty jen ořezávaly o okraj a nebylo by vidět, kam až to spadlo.
+   * Bere se ale 2. a 98. percentil, ne minimum: jediné zašuměné okno v náběhu
+   * umí být o desítky dB jinde a roztáhlo by osu tak, že by zbytek grafu byl
+   * jedna čára. (Stejná zásada jako normalizace spektrogramu 99,5. percentilem.) */
+  const extra = [];
+  for (const n of meas) {
+    const ser = n.spr_series;
+    if (!ser || ser.length < 3) continue;
+    const v = ser.map(p => p[1]).sort((a, b) => a - b);
+    extra.push(v[Math.floor(v.length * 0.02)], v[Math.min(v.length - 1, Math.floor(v.length * 0.98))]);
+  }
   const thr = Number.isFinite(summary?.ring_threshold) ? summary.ring_threshold : Math.min(...vals);
-  let lo = Math.min(...vals, thr), hi = Math.max(...vals);
+  let lo = Math.min(...vals, thr, ...extra), hi = Math.max(...vals, ...extra);
   const pad = Math.max(2, (hi - lo) * 0.12);
   lo -= pad; hi += pad;
   const t1 = Math.max(...notes.map(n => n.t_end), 1);
@@ -306,9 +318,48 @@ export function drawSpr(canvas, notes, summary, playheadT = null, opts = {}) {
     if (n.spr !== n.spr) continue;
     const xa = x(n.t_start), xb = x(n.t_end);
     if (xb < clipL - 20 || xa > clipR + 20) continue;
+    const color = n.ring_dropout ? COL.bad : n.ring_ok ? COL.ok : COL.excl;
+
+    /* DLOUHÝ TÓN = KŘIVKA, NE JEDEN SLOUPEC.
+     *
+     * Držený tón měl v grafu jedinou hodnotu, i když trvá pět vteřin a ring se
+     * v jejich průběhu mění (naměřeno na reálném zpěvu: IQR uvnitř tónu 6,45 dB
+     * i po vyhlazení). Jedno číslo schová přesně to, co zpěvák hledá: jestli
+     * ring drží od náběhu do konce, nebo na konci padá. Proto se u tónů, které
+     * mají časovou řadu, kreslí stuha (rozptyl v okně) + středová linka.
+     *
+     * Stuha se kreslí jako JEDNA plocha (tam a zpět), ne dva tahy — dva tahy by
+     * v překryvu ztmavly a vypadaly jako změna barvy. */
+    const ser = n.spr_series;
+    if (ser && ser.length >= 2) {
+      const t0 = n.t_start;
+      const px = (i) => x(t0 + ser[i][0]);
+      const py = (i) => y(ser[i][1]);
+
+      ctx.globalAlpha = 0.30;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(px(0), py(0));
+      for (let i = 1; i < ser.length; i++) ctx.lineTo(px(i), py(i));
+      ctx.lineTo(px(ser.length - 1), bottom);
+      ctx.lineTo(px(0), bottom);
+      ctx.closePath();
+      ctx.fill();
+      ctx.globalAlpha = 1;
+
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.moveTo(px(0), py(0));
+      for (let i = 1; i < ser.length; i++) ctx.lineTo(px(i), py(i));
+      ctx.stroke();
+      continue;
+    }
+
     const bw = Math.max(2, Math.min(18, xb - xa));
     const yy = y(n.spr);
-    ctx.fillStyle = n.ring_dropout ? COL.bad : n.ring_ok ? COL.ok : COL.excl;
+    ctx.fillStyle = color;
     ctx.fillRect(xa + (xb - xa - bw) / 2, Math.min(yy, bottom), bw, Math.abs(bottom - yy));
   }
   ctx.restore();
