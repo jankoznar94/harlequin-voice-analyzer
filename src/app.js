@@ -798,6 +798,12 @@ function addLiveToHistory(s) {
     live: true,
     seconds: s.seconds,
     peak_dbfs: Number.isFinite(s.peakDbfs) ? s.peakDbfs : null,
+    /* Délka vokálního traktu (poloha hrtanu) — jen když je z čeho ji vzít.
+     * Živý režim tóny segmentuje jen podle výšky, takže číslo vzniká z méně
+     * tónů než v reportu a u vysokých tónů často vůbec. Ukládá se proto i počet
+     * tónů (`vtl_n`), aby se z jednoho tónu nestalo „měření". */
+    vtl_cm: Number.isFinite(s.vtlCm) ? s.vtlCm : null,
+    vtl_n: s.vtlN || 0,
   });
   saveHist(rows);
   renderHist();

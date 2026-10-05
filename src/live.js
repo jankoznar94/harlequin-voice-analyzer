@@ -24,6 +24,7 @@
 
 import {
   hzToNote, REFS, percentile, SprCore, SPR_NFFT, SPR_QUANTILE,
+  formantsAt, noteTraktu,
 } from './analysis.js';
 
 /* ── konstanty ────────────────────────────────────────────────────────────── */
@@ -33,6 +34,53 @@ export const FRAME_SIZE = 2048;
 
 /** Jak chodí bloky z AudioWorkletu (ms). */
 export const BLOCK_MS = 20;
+
+/**
+ * Okno pro DÉLKU VOKÁLNÍHO TRAKTU (ms).
+ *
+ * 85 ms = 4096 vzorků @48 kHz, tedy PŘESNĚ okno, které už do `feedFrame` chodí
+ * jako `sprWin`. Díky tomu není potřeba druhý kruhový zásobník — kdyby si VTL
+ * drželo vlastní okno jiné délky, musel by se přidat a ořezávat zvlášť.
+ *
+ * PROČ právě 85 ms (naměřeno proti známé pravdě, `tools/exp-vtl-live5.mjs`):
+ *   okno  85 ms → |chyba| medián 0,30 cm, číslo se ukáže u 15 z 25 tónů
+ *   okno 171 ms → |chyba| 0,32 cm, ale jen u 8 z 25 tónů
+ *   okno 341 ms → |chyba| 0,32 cm, jen u 3 z 25 tónů
+ * Čím delší okno, tím méně tónů projde fyziologickým filtrem (LPC na delším
+ * okně častěji chytne harmonickou). Přesnost je přitom stejná, takže kratší
+ * okno je lepší.
+ *
+ * POZOR — krok výpočtu je KAŽDÝ RÁMEC (20 ms), ne jednou za tři. Naměřeno na čtyřech
+ * reálných nahrávkách (122 tónů nad 0,9 s) — kolik tónů se dočká čísla:
+ *   krok 20 ms, práh 3 okna → 51 %      krok 60 ms, práh 3 okna → 30 %
+ *   krok 20 ms, práh 1 okno → 68 %      krok 60 ms, práh 5 oken → 14 %
+ * Vzácná okna (LPC chytne harmonickou) jsou rozesetá nepravidelně, takže delší
+ * krok je sítí, kterou propadnou. Cena 1,4 ms/rámec je při rozpočtu 20 ms
+ * únosná (živý rámec výšky+SPR stojí 0,41 ms v JS, 0,13 ms ve WASM).
+ */
+export const VTL_WIN_SAMPLES = 4096;
+export const VTL_EVERY_FRAMES = 1;
+
+/**
+ * Kolik oken (alespoň) musí tón mít, než se jeho délka traktu ukáže.
+ *
+ * Tři okna = 3 rámce = 60 ms držení. Jeden tón (jedno okno) není měření —
+ * naměřeno, že jednotlivá okna kolísají o ±1 cm. Dvě by šly, ale tři jsou na
+ * nahrávce stále u poloviny tónů (viz čísla výš); výš to jde jen za cenu
+ * prudkého propadu.
+ */
+export const VTL_MIN_WINDOWS = 3;
+
+/**
+ * Rozpětí, ve kterém se okna téhož tónu považují za TÝŽ tón.
+ *
+ * Živý režim tóny nesegmentuje, takže začátek tónu pozná jen podle změny
+ * noty (`state.lastNote`). Když se nota během držení tónu rozkmitá o půltón
+ * (což se u vibrata a v přechodech děje), sada oken by se mazala pořád a číslo
+ * by nikdy nedosáhlo prahu. Proto se sada drží, dokud se nota vejde do
+ * půltónu; teprve skok na jiný tón (nebo ticho) ji zahodí.
+ */
+export const VTL_NOTE_KEEP = 1;
 
 /**
  * Jak dlouhé klouzavé okno drží hodnoty SPR pro zobrazení.
@@ -166,6 +214,13 @@ export function createLiveState(sampleRate = 48000, frameSize = FRAME_SIZE) {
     sprRoll: [],          // klouzavé okno posledních hodnot SPR (~200 ms)
     sprRollMax: rollFrames,
     sprLast: NaN,         // SPR posledního rámce
+    // délka vokálního traktu (okno 4096 = tentýž vzorek jako sprWin)
+    vtlValues: [],        // okna, která prošla fyziologickým filtrem — od začátku TÓNU
+    vtlTones: [],         // hotové tóny (medián jejich oken) — pro souhrn
+    vtlNote: null,        // nota, ke které sada oken patří
+    vtlNoteCents: null,   // centy té noty (kvůli rozkmitu o půltón)
+    frameIndex: 0,        // počítadlo rámců — VTL se počítá každý 3.
+    vtlLast: NaN,         // poslední spočítaný odhad (medián sady)
   };
 }
 
@@ -188,6 +243,62 @@ export function sprSummary(state) {
     p90: percentile(s, SPR_QUANTILE),
     n: s.length,
   };
+}
+
+/**
+ * Délka vokálního traktu pro ŽIVÝ režim — varianta „tón".
+ *
+ * PROČ „tón" a ne „jehla": číslo z JEDNOHO okna kolísá o ±1 cm (naměřeno), takže
+ * by ručička cukala a člověk by nevěděl, čemu věřit. Medián oken od začátku
+ * DRŽENÉHO tónu je stabilní a odpovídá tomu, jak číslo počítá report z nahrávky
+ * (tam je to medián přes rámce uvnitř tónu). Cena je, že se číslo ukáže až po
+ * `VTL_MIN_WINDOWS` oknech (~0,3 s držení tónu) — do té doby UI hlásí „—".
+ *
+ * Živý režim tóny NESEGMENTUJE (to umí jen analýza celé nahrávky), takže
+ * začátek tónu se pozná jen podle VÝŠKY: dokud je nová výška do půltónu od té,
+ * se kterou se sada začala, patří okna témuž tónu. Skok na jiný tón sadu zahodí
+ * a začne novou. Půltón (ne nula), protože vibrato a přechody se do noty
+ * promítají — při přesné shodě by se sada mazala pořád a číslo by nikdy
+ * nedosáhlo prahu (naměřeno: sada se nikdy nedostala přes 2 okna).
+ *
+ * POZOR — do rozestupu jde JEN F1–F3, viz `noteTraktu` v analysis.js. `formantsAt`
+ * vrací až pět formantů a s nimi filtrem neprojde nic.
+ *
+ * @param state  stav z createLiveState
+ * @param win    okno 4096 vzorků — TOTÉŽ jako pro SPR, takže není druhý zásobník
+ * @param f0     výška rámce (Hz), 0 = ticho
+ */
+function pushVtl(state, win, f0) {
+  if (!(f0 > 0) || !win || win.length < VTL_WIN_SAMPLES) {
+    // ticho (nebo okno ještě není) = tón skončil; sada se uzavře do souhrnu
+    closeVtlTone(state);
+    return;
+  }
+
+  const cents = 1200 * Math.log2(f0 / 440);
+  if (state.vtlNoteCents === null || Math.abs(cents - state.vtlNoteCents) > 100 * VTL_NOTE_KEEP) {
+    closeVtlTone(state);                    // jiný tón — začni znovu
+    state.vtlNoteCents = cents;
+  }
+
+  // každý VTL_EVERY_FRAMES. rámec; mezitím se vrací poslední známé číslo
+  state.frameIndex++;
+  if (state.frameIndex % VTL_EVERY_FRAMES !== 0) return;
+
+  const F = formantsAt(win, state.sampleRate, 0, win.length);
+  const t = noteTraktu(F[0], F[1], F[2]);
+  if (!t) return;                           // LPC chytil harmonickou — nehlásit
+  state.vtlValues.push(t.vtl_cm);
+  state.vtlLast = median(state.vtlValues);
+}
+
+/** Uzavře sadu oken tónu: dost použitelných oken → do souhrnu přes tóny. */
+function closeVtlTone(state) {
+  if (state.vtlValues.length >= VTL_MIN_WINDOWS) {
+    state.vtlTones.push(median(state.vtlValues));
+  }
+  state.vtlValues = [];
+  state.vtlNoteCents = null;
 }
 
 /**
@@ -247,6 +358,13 @@ export function feedFrame(state, dsp, frame, sprWin = null) {
       state.sprRoll.push(v);
       if (state.sprRoll.length > state.sprRollMax) state.sprRoll.shift();
     }
+
+    /* 3. Délka vokálního traktu — okno 4096, tedy TOTÉŽ jako SPR. Drží se od
+     * začátku tónu a hlásí se medián; viz pushVtl výš. */
+    pushVtl(state, sprWin, f0raw);
+  } else {
+    // ticho tón ukončuje — sada oken se uzavře, aby se počítala do souhrnu
+    pushVtl(state, null, 0);
   }
 
   const sprNow = state.sprRoll.length ? percentile(state.sprRoll, SPR_QUANTILE) : NaN;
@@ -288,6 +406,11 @@ export function feedFrame(state, dsp, frame, sprWin = null) {
     voiced,
     spr: sprNow,                         // co ukázat v číselníku (klouzavě)
     sprLast: state.sprLast,              // SPR posledního rámce (okno 4096)
+    /* Délka vokálního traktu: `vtl` = číslo od začátku DRŽENÉHO tónu (medián
+     * jeho oken), `vtlN` = z kolika oken vzniklo. Dokud je oken málo, je NaN
+     * a UI ukazuje „—“ — jeden tón není měření. */
+    vtl: state.vtlLast,
+    vtlN: state.vtlValues.length,
     /* Starší měřidlo (vyhlazený průměr spektra okna 2048) — v grafu se kreslí
      * jako bledá tlustá čára vedle přesné. Není to pozůstatek: je to číslo,
      * které vibrato sráží dolů, a na grafu je vidět, o kolik. */
@@ -311,6 +434,10 @@ export function median(a) {
 export function summarizeLive(state) {
   const secs = state.startedAt ? (Date.now() - state.startedAt) / 1000 : 0;
   const sprS = sprSummary(state);
+  // Rozpracovaný tón se do souhrnu musí vzít taky — jinak by poslední (často
+  // nejdelší) tón v měření chyběl.
+  closeVtlTone(state);
+  const vtl = vtlSummary(state);
   return {
     seconds: secs,
     frames: state.frames,
@@ -330,6 +457,32 @@ export function summarizeLive(state) {
     fheMedian: median(state.fheSamples),
     centsSpread: spread(state.centsHist),
     noteNames: null,
+    /* Délka vokálního traktu (poloha hrtanu). Živý režim tóny segmentuje jen
+     * podle výšky, takže se hlásí i počet tónů, ze kterých číslo vzniklo —
+     * bez toho by se z jednoho tónu stalo „měření“. Srovnatelné je to
+     * s reportem jen relativně (viz delkaTraktu v analysis.js). */
+    vtlCm: vtl.cm,
+    vtlN: vtl.n,
+    vtlWindows: vtl.okna,
+  };
+}
+
+/**
+ * Souhrn délky traktu z celého měření — medián přes TÓNY (ne přes okna).
+ *
+ * Stejná statistika jako `delkaTraktu`: jedno číslo na tón, pak medián z nich.
+ * Kdyby se mediánoval přes okna, dal by delším tónům větší váhu a na
+ * nahrávkách s jedním drženým tónem by to vyšlo jinak než v reportu.
+ */
+export function vtlSummary(state) {
+  const t = state.vtlTones || [];
+  if (!t.length) return { cm: NaN, n: 0, okna: 0 };
+  const s = [...t].sort((a, b) => a - b);
+  const h = s.length >> 1;
+  return {
+    cm: s.length & 1 ? s[h] : (s[h - 1] + s[h]) / 2,
+    n: s.length,
+    okna: t.length,
   };
 }
 

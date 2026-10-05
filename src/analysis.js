@@ -1272,6 +1272,44 @@ export function vibrato(f0, dt) {
 /* ------------------------------------------------- DÉLKA VOKÁLNÍHO TRAKTU -- */
 
 /**
+ * Fyziologický rozsah délky traktu (cm). MIMO něj je odhad vadný: LPC chytne
+ * harmonickou místo formantu a vyjde dF 337–672 Hz, tedy 26–51 cm. Filtr
+ * `dF ∈ 780–1429 Hz` (12–22 cm, s rezervou) ty případy POZNÁ a vyřadí — bez
+ * něj metrika občas hlásí 45 cm.
+ *
+ * Používá ji offline cesta (`delkaTraktu`) i živý režim (`live.js`) ze STEJNÝCH
+ * mezí. Kdyby si je každá držela zvlášť, rozejde se práh a živé číslo přestane
+ * sedět s reportem.
+ */
+export const VTL_MIN_CM = 12;
+export const VTL_MAX_CM = 22;
+
+/**
+ * Délka traktu z JEDNOHO tónu (jeho F1–F3). Vrací `{ dF, vtl_cm }`, nebo null,
+ * když z tónu nelze nic použitelného vzít.
+ *
+ * ⚠️ Bere se JEN `[f1, f2, f3]`. `formantsAt` vrací až pět formantů, ale do
+ * rozestupu patří jen první tři — s F4 a F5 vyjde dF 495–672 Hz (naměřeno na
+ * syntetice se známým traktem) a filtrem neprojde NIC. Vypadá to pak jako
+ * „metrika nefunguje", přitom jde o chybu porovnávání.
+ *
+ * @param {number} f1 F1 v Hz
+ * @param {number} f2 F2 v Hz
+ * @param {number} f3 F3 v Hz
+ * @returns {{dF:number, vtl_cm:number}|null}
+ */
+export function noteTraktu(f1, f2, f3) {
+  const v = [f1, f2, f3].filter(x => x === x && x > 0);
+  if (v.length < 2) return null;
+  let s = 0;
+  for (let i = 1; i < v.length; i++) s += v[i] - v[i - 1];
+  const dF = s / (v.length - 1);
+  const dFmin = 34300 / (2 * VTL_MAX_CM), dFmax = 34300 / (2 * VTL_MIN_CM);
+  if (!(dF >= dFmin && dF <= dFmax)) return null;
+  return { dF, vtl_cm: 34300 / (2 * dF) };
+}
+
+/**
  * Délka vokálního traktu (poloha hrtanu) z rozestupu formantů.
  *
  * PROČ: poloha hrtanu se z nahrávky čte právě takhle — nižší hrtan = delší
@@ -1302,30 +1340,30 @@ export function vibrato(f0, dt) {
  * @returns {{vtl_cm:number, dF_hz:number, n:number, z_tonek:number}|null}
  */
 export function delkaTraktu(noty) {
-  const VTL_MIN = 12, VTL_MAX = 22;
-  const dFmin = 34300 / (2 * VTL_MAX), dFmax = 34300 / (2 * VTL_MIN);
-  const vsechny = [];
+  const dFs = [];
+  let zTonek = 0;
   for (const n of noty || []) {
+    // `z_tonek` = tóny, ze kterých se dal rozestup vůbec spočítat (aspoň dva
+    // formanty). `n` pak = ty, co navíc prošly fyziologickým filtrem. Rozdíl
+    // mezi nimi je to, co se hlásí v UI jako „vyřazeno mimo rozsah".
     const v = [n.f1, n.f2, n.f3].filter(x => x === x && x > 0);
     if (v.length < 2) continue;
-    vsechny.push(v);
+    zTonek++;
+    const t = noteTraktu(n.f1, n.f2, n.f3);
+    if (t) dFs.push(t.dF);
   }
-  if (!vsechny.length) return null;
-  const rozestupy = [];
-  for (const v of vsechny) {
-    let s = 0;
-    for (let i = 1; i < v.length; i++) s += v[i] - v[i - 1];
-    rozestupy.push(s / (v.length - 1));
-  }
-  const pouzite = rozestupy.filter(d => d >= dFmin && d <= dFmax);
-  if (!pouzite.length) return null;
-  const s = [...pouzite].sort((a, b) => a - b);
-  const dF = s.length & 1 ? s[s.length >> 1] : (s[(s.length >> 1) - 1] + s[s.length >> 1]) / 2;
+  if (!dFs.length) return null;
+  // Mediánuje se ROZESTUP (dF), ne VTL — převod přes 1/x není lineární a
+  // medián z převrácených hodnot vyjde jinak (a hůř) než převrácená hodnota
+  // mediánu. Tak to počítala i původní verze.
+  dFs.sort((a, b) => a - b);
+  const h = dFs.length >> 1;
+  const dF = dFs.length & 1 ? dFs[h] : (dFs[h - 1] + dFs[h]) / 2;
   return {
     vtl_cm: 34300 / (2 * dF),
     dF_hz: dF,
-    n: pouzite.length,
-    z_tonek: rozestupy.length,
+    n: dFs.length,
+    z_tonek: zTonek,
   };
 }
 

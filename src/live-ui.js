@@ -36,6 +36,7 @@ function cacheEls() {
     fhe: $('c-live-fhe'),
     note: $('lv-note'), cents: $('lv-cents'), f0: $('lv-f0'),
     sprNow: $('lv-spr'), sprMed: $('lv-sprmed'), fheVal: $('lv-fhe'),
+    vtl: $('lv-vtl'),
     lvl: $('lv-lvl'), spread: $('lv-spread'), pct: $('lv-pct'), time: $('lv-time'),
   };
   return el;
@@ -73,6 +74,12 @@ function updateNumbers(snap, fach) {
 
   const lcls = levelClass(snap.dbfs);
   setText(e.lvl, Number.isFinite(snap.dbfs) ? `${snap.dbfs.toFixed(0)} dB` : '—', lcls);
+
+  /* Délka vokálního traktu. Dokud je oken málo, je `snap.vtl` NaN a zůstane
+   * „—" — číslo z jednoho okna kolísá o ±1 cm a hlásit ho jako měření by
+   * lhalo. Barvu NEMÁ: mimo fyziologický rozsah se sem číslo vůbec nedostane
+   * (filtr je v `noteTraktu`), takže není co obarvovat na červeno. */
+  setText(e.vtl, Number.isFinite(snap.vtl) ? `${snap.vtl.toFixed(1)} cm` : '—');
 }
 
 /* ── kreslení jednoho snímku ─────────────────────────────────────────────── */
