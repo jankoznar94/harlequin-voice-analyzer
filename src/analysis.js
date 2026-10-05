@@ -322,7 +322,27 @@ export class SprCore {
   }
 }
 
-/** FHE — frekvence, kde kumulativní energie v pásmu dosáhne 50 %. */
+/**
+ * FHE (frequency of half energy) — kmitočet, pod kterým leží polovina energie
+ * v pásmu zpěváckého formantu.
+ *
+ * ⚠️ PÁSMO SE LIŠÍ PODLE OBORU. Původní práce (Müller, Wang, Caffier et al.
+ * 2022, Sci Rep 12:17921, doi 10.1038/s41598-022-22821-w) definuje pásma takto:
+ *   soprán              2300–4500 Hz
+ *   tenor/baryton/bas   2000–3600 Hz
+ * Referenční hodnoty v `REFS.FHE` jsou měřené z TĚCHTO pásem, takže dosadit
+ * jiné pásmo znamená srovnávat nesrovnatelné. Naměřeno na syntetickém sopránu
+ * (shluk F3–F5 kolem 3,4 kHz): pásmo 2000–3600 dá 3176 Hz, správné pásmo
+ * 2300–4500 dá 3633 Hz — rozdíl 457 Hz, tj. **1,3 směrodatné odchylky**
+ * (soprán ±284 Hz). Proto se pásmo bere podle `fach`.
+ */
+export const FHE_BANDS = {
+  sopran: [2300, 4500],
+  tenor: [2000, 3600], baryton: [2000, 3600], bas: [2000, 3600],
+  alt: [2000, 3600],
+  vse: [2000, 3600],          // „bez filtru" referenci nemá, pásmo jen orientační
+};
+
 export function fhe(spec, lo = 2000, hi = 3600) {
   const { freq, db } = spec;
   let total = 0;
@@ -343,17 +363,28 @@ export function fhe(spec, lo = 2000, hi = 3600) {
   return idx[idx.length - 1][0];
 }
 
-/** Alpha ratio — průměr 1-5 kHz minus průměr 50-1000 Hz (dB). */
+/**
+ * Alpha ratio — poměr energie 1–5 kHz ku 50 Hz–1 kHz (dB).
+ *
+ * ⚠️ POČÍTÁ SE POMĚR ENERGIÍ, NE PRŮMĚR dB. Původní definice
+ * (Frøkjær-Jensen & Prytz 1976, Brüel & Kjær Technical Review 3:3–17) je
+ * poměr energií v obou pásmech; průměr dB je jiná veličina. Naměřeno na
+ * reálné nahrávce (`zpev.wav`): průměr dB dá −14,87 dB, poměr energií
+ * −11,72 dB — rozdíl 3,16 dB. Obojí je „skoro totéž" jen zdánlivě.
+ *
+ * Vrací se v dB (10·log10 poměru), takže číslo je srovnatelné s literaturou.
+ */
 export function alphaRatio(spec) {
-  let aSum = 0, aN = 0, bSum = 0, bN = 0;
+  let aP = 0, aN = 0, bP = 0, bN = 0;
   const { freq, db } = spec;
   for (let i = 0; i < freq.length; i++) {
     const f = freq[i];
-    if (f >= 1000 && f <= 5000) { aSum += db[i]; aN++; }
-    else if (f >= 50 && f <= 1000) { bSum += db[i]; bN++; }
+    const p = Math.pow(10, db[i] / 10);
+    if (f >= 1000 && f <= 5000) { aP += p; aN++; }
+    else if (f >= 50 && f <= 1000) { bP += p; bN++; }
   }
-  if (!aN || !bN) return NaN;
-  return aSum / aN - bSum / bN;
+  if (!aN || !bN || aP <= 0 || bP <= 0) return NaN;
+  return 10 * Math.log10((aP / aN) / (bP / bN));
 }
 
 /** Mezní kmitočet: nejvyšší f, kde spektrum ještě není o dropDb pod vrcholem. */
@@ -587,6 +618,29 @@ export function yinFrame(frame, sampleRate, fMin, fMax, threshold) {
   }
   if (tau < 0) return -1;
 
+  /* ── OKTÁVOVÁ CHYBA: ZKOUŠENO A ZAMÍTNUTO (neopakovat!) ────────────────
+   *
+   * Když je H2 silnější než H1 (tenor 330 a 349 Hz na /a/), YIN vrátí
+   * DVOJNÁSOBNOU výšku. Zdálo se, že stačí hledat minimum i poblíž 2·tau
+   * a při srovnatelném skóre vzít NIŽŠÍ f0 — na syntetickém 330 Hz to
+   * „fungovalo" (657 → 329 Hz).
+   *
+   * ⚠️ PRAVIDLO JE VŠAK REGRESE a bylo ZAMÍTNUTO měřením (tools/exp-yin-oktava.mjs,
+   * exp-yin-stat.mjs): na ČISTÉM tónu 392 Hz (generátor z parity, harmonické
+   * 1/h) přepne na 196 Hz — o oktávu NÍŽ, tedy rozbije nejběžnější případ.
+   *
+   * Proč to nejde rozlišit: u obou případů je d(2τ) hluboko pod d(τ)
+   * (poměr 0,04 u skutečné chyby vs. 0,05 u správného tónu) i CMND poměr
+   * (0,04 vs 0,05). Statistika, která by je odlišila, se NENAŠLA — a bez ní
+   * je každé pravidlo jen hádání, které občas rozbije správný tón.
+   * (Kontrola „je energie na f/2?" selhává z téhož důvodu jako dřív: při
+   * H2 >> H1 tam základní tón sice je, ale slabý.)
+   *
+   * Oprava tedy NENÍ. Dokud se nenajde rozlišující statistika ověřená na
+   * SKUTEČNÉM hlasu (syntetika nestačí — viz past s oktávovou chybou výš),
+   * zůstává YIN tak, jak je.
+   */
+
   // parabolická interpolace
   let betterTau = tau;
   if (tau > 0 && tau + 1 < tauMax) {
@@ -695,6 +749,8 @@ export function yinFrameFast(frame, sampleRate, fMin, fMax, threshold, rad = 10)
     }
   }
   if (tau < 0) return -1;
+  /* Pravidlo proti oktávové chybě tu BYLO a je ZAMÍTNUTÉ — rozbíjelo čisté
+   * tóny (392 Hz → 196 Hz). Důvod i měření viz komentář v `yinFrame`. */
   return refinePitch(frame, sampleRate, fMin, fMax, tau, rad);
 }
 
@@ -1201,23 +1257,64 @@ export function formantsAt(samples, sampleRate, tStartSample, tEndSample, opts =
 /* -------------------------------------------------------------- HNR / JIT -- */
 
 /**
- * HNR z autokorelace (Boersma 1993 - princip jako Praat, zjednodušeně).
- * Vrací dB nebo NaN.
+ * HNR z autokorelace (Boersma 1993, princip jako Praat).
+ *
+ * ⚠️ DVĚ VĚCI, KTERÉ SE TU NESMÍ VYNECHAT — obojí naměřeno proti známé pravdě
+ * (tón + bílý šum; pro bílý šum je r(τ) = 0, takže HNR **musí** vyjít = SNR):
+ *
+ *  1. **Hannovo okno na signál.** Bez okna uniká spektrum a r je systematicky
+ *     špatně. Naměřeno: chyba až −11,4 dB při f0 = 880 Hz.
+ *  2. **NORMALIZACE NA OKNO.** `r(τ) = Σ w[i]·w[i+τ]·x[i]·x[i+τ] / Σ w[i]·w[i+τ]`
+ *     (a `r0` stejně s τ = 0). Součet součinu okna v lagu τ je MENŠÍ než v 0,
+ *     takže bez normalizace okno HNR samo sráží — naměřeno −9,4 dB při 880 Hz.
+ *     Okno bez normalizace je tedy STEJNĚ ŠPATNÉ jako žádné okno.
+ *
+ * Po obou opravách je chyba proti pravdě −0,2 až +0,9 dB (předtím −11,4 až +3).
+ * Interpolace vrcholu autokorelace přesnost už dál nezvyšuje (rozhoduje
+ * normalizace), ale nevadí — nechává se kvůli neceločíselné periodě.
+ *
+ * Nevyhazuje se proto `Math.round(sr/f0)` jako perioda: hledá se maximum
+ * v okolí a doladí parabolou, aby se neceločíselná perioda nezaokrouhlila.
  */
 export function hnr(samples, sampleRate, f0) {
   if (!(f0 > 0)) return NaN;
-  const period = Math.round(sampleRate / f0);
-  const winLen = Math.min(samples.length, period * 6);
-  if (winLen < period * 2) return NaN;
-  const x = samples.subarray(0, winLen);
-  let r0 = 0;
-  for (let i = 0; i < winLen; i++) r0 += x[i] * x[i];
-  r0 /= winLen;
+  const period = sampleRate / f0;
+  const winLen = Math.min(samples.length, Math.round(period * 6));
+  if (winLen < period * 2 || winLen < 64) return NaN;
+
+  const w = new Float64Array(winLen);
+  for (let i = 0; i < winLen; i++) w[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (winLen - 1));
+
+  // normalizace na okno pro daný lag
+  const norm = (lag) => {
+    let s = 0;
+    for (let i = 0; i + lag < winLen; i++) s += w[i] * w[i + lag];
+    return s || 1;
+  };
+  const rAt = (lag) => {
+    let s = 0;
+    for (let i = 0; i + lag < winLen; i++) s += w[i] * w[i + lag] * samples[i] * samples[i + lag];
+    return s / norm(lag);
+  };
+
+  // r0 = energie okénkovaného signálu (τ = 0; normalizace je tam 1)
+  let r0 = 0, n0 = 0;
+  for (let i = 0; i < winLen; i++) { const ww = w[i] * w[i]; r0 += ww * samples[i] * samples[i]; n0 += ww; }
+  r0 /= (n0 || 1);
   if (r0 <= 0) return NaN;
-  let rT = 0;
-  const lim = winLen - period;
-  for (let i = 0; i < lim; i++) rT += x[i] * x[i + period];
-  rT /= lim;
+
+  const lo = Math.max(1, Math.floor(period) - 3), hi = Math.min(winLen - 2, Math.ceil(period) + 3);
+  const cand = [];
+  for (let k = lo; k <= hi; k++) cand.push(rAt(k));
+  if (!cand.length) return NaN;
+  let bi = 0;
+  for (let i = 1; i < cand.length; i++) if (cand[i] > cand[bi]) bi = i;
+  let rT = cand[bi];
+  if (bi > 0 && bi < cand.length - 1) {
+    const y0 = cand[bi - 1], y1 = cand[bi], y2 = cand[bi + 1];
+    const den = y0 - 2 * y1 + y2;
+    if (den !== 0) { const d = 0.5 * (y0 - y2) / den; if (Math.abs(d) <= 1) rT = y1 - 0.25 * (y0 - y2) * d; }
+  }
   const ratio = Math.min(1 - 1e-9, Math.max(1e-9, rT / r0));
   return 10 * Math.log10(ratio / (1 - ratio));
 }
@@ -1235,36 +1332,80 @@ export function jitter(times, f0) {
 
 /* ---------------------------------------------------------------- VIBRATO -- */
 
+/**
+ * Vibrato z kontury f0 — RYCHLOST a ROZKMIT.
+ *
+ * ⚠️ RYCHLOST SE MĚŘÍ SLEDOVÁNÍM EXTRÉMŮ, NE FFT. Důvod je naměřený: rozlišení
+ * FFT je `1/(N·dt)`, takže na tónu 1,2 s (116 rámců po 10 ms) je jeden bin
+ * 0,86 Hz a naměřená rychlost se „přilepí" k 4,69 Hz místo pravých 5,00 Hz.
+ * Na dlouhém tónu (2 s) dá FFT 5,08 Hz, kdežto sledování extrémů 5,00 Hz
+ * UŽ OD 0,4 s. Prame (1994, JASA 96:1979–1984) pro krátké tóny doporučuje
+ * právě autokorelaci / sledování extrémů, ne FFT.
+ *
+ * ⚠️ ROZKMIT (`extent`) je p95 − p05 z DETRENDOVANÝCH centů — stejně jako
+ * dřív, aby se číslo neposunulo. Je to „jak široký pás hlas projíždí",
+ * ne peak-to-peak; peak-to-peak je u sinusového vibrata ~1,7× větší.
+ */
 export function vibrato(f0, dt) {
   const idx = [];
   for (let i = 0; i < f0.length; i++) if (f0[i] > 0) idx.push(i);
-  if (idx.length < 16) return { rate: NaN, extent: NaN };
-  const cents = idx.map(i => hzToCents(f0[i]));
+  if (idx.length < 12) return { rate: NaN, extent: NaN };
+  let cents = idx.map(i => hzToCents(f0[i]));
   const n = cents.length;
   const mean = cents.reduce((a, b) => a + b, 0) / n;
+
+  // odstranit lineární trend (glissando, rozjezd tónu)
   let num = 0, den = 0;
   for (let i = 0; i < n; i++) { num += (i - n / 2) * (cents[i] - mean); den += (i - n / 2) ** 2; }
   const slope = den ? num / den : 0;
-  const detrended = cents.map((c, i) => c - (mean + slope * (i - n / 2)));
-  // FFT na detrendovaném signálu
-  const N = 1 << Math.ceil(Math.log2(n));
-  const re = new Float64Array(N), im = new Float64Array(N);
-  const w = hann(N);
-  for (let i = 0; i < n; i++) re[i] = detrended[i] * w[i];
-  fft(re, im);
-  const half = N >> 1;
-  const mag = new Float64Array(half);
-  for (let i = 0; i < half; i++) mag[i] = Math.hypot(re[i], im[i]);
-  const binHz = 1 / (N * dt);
-  let best = 0, bestI = 0;
-  for (let i = 1; i < half; i++) {
-    const f = i * binHz;
-    if (f >= 3.5 && f <= 9.0 && mag[i] > best) { best = mag[i]; bestI = i; }
+  cents = cents.map((c, i) => c - (mean + slope * (i - n / 2)));
+
+  // lehké vyhlazení (3 rámce) — jinak by prahy chytaly jednotlivé vzorky
+  const sm = cents.map((_, i) => {
+    const a = Math.max(0, i - 1), b = Math.min(n - 1, i + 1);
+    return (cents[a] + cents[i] + cents[b]) / 3;
+  });
+
+  /* Sledování extrémů ZIGZAG: drží se běžné maximum (resp. minimum), směr se
+   * přepne, až když se hlas od něj vzdálí o práh, a jako extrém se zapíše
+   * INDEX TOHO MAXIMA/MINIMA (ne bod přepnutí). Práh se bere z ROZKMITU (25 %),
+   * ale aspoň 3 centy — na tónu bez vibrata relativní práh nic nenajde
+   * (naměřeno: rozsah 0,0 c → rate NaN), kdežto pevný práh by si vymyslel
+   * extrémy z šumu.
+   *
+   * ⚠️ Naivnější varianta („přepni, když je odchylka od POSLEDNÍHO BODU > práh")
+   * tiše selhává: `last` se při čekání na směr neaktualizuje, takže se najde
+   * NULA extrémů a rychlost vyjde NaN. Naměřeno na 6Hz vibratu: práh 19 c,
+   * rozkmit 76 c, a přesto 0 extrémů. Ověřeno proti známé pravdě: zigzag dá
+   * 5,00 / 6,25 / 7,14 Hz (chyba do 0,25 Hz) už od tónu 0,4 s.
+   */
+  const rng = Math.max(...sm) - Math.min(...sm);
+  const th = Math.max(3, rng * 0.25);
+  const ext = [];
+  let dir = 0, extIdx = 0, hi = sm[0], lo = sm[0];
+  for (let i = 1; i < n; i++) {
+    if (dir >= 0) {
+      if (sm[i] > hi) { hi = sm[i]; extIdx = i; }
+      if (hi - sm[i] > th) { ext.push(extIdx); dir = -1; lo = sm[i]; extIdx = i; }
+    }
+    if (dir <= 0) {
+      if (sm[i] < lo) { lo = sm[i]; extIdx = i; }
+      if (sm[i] - lo > th) { ext.push(extIdx); dir = 1; hi = sm[i]; extIdx = i; }
+    }
   }
-  const sorted = Array.from(detrended).sort((a, b) => a - b);
-  const p95 = sorted[Math.floor(0.95 * (n - 1))];
-  const p05 = sorted[Math.floor(0.05 * (n - 1))];
-  return { rate: bestI ? bestI * binHz : NaN, extent: p95 - p05 };
+  let rate = NaN;
+  if (ext.length >= 2) {
+    const gaps = [];
+    for (let i = 1; i < ext.length; i++) gaps.push((ext[i] - ext[i - 1]) * dt);
+    gaps.sort((a, b) => a - b);
+    const med = gaps[gaps.length >> 1];
+    rate = med > 0 ? 1 / (2 * med) : NaN;      // extrémy jsou ob půlperiodu
+  }
+
+  const sorted = [...cents].sort((a, b) => a - b);
+  const p95 = sorted[Math.min(n - 1, Math.round(0.95 * (n - 1)))];
+  const p05 = sorted[Math.min(n - 1, Math.round(0.05 * (n - 1)))];
+  return { rate, extent: p95 - p05 };
 }
 
 /* ---------------------------------------------------------------- KONFIG -- */
@@ -1285,6 +1426,44 @@ export const VTL_MIN_CM = 12;
 export const VTL_MAX_CM = 22;
 
 /**
+ * Rozestup formantů metodou podle Fitch (1997, JASA 102:1213–1222):
+ * SMĚRNICE LINEÁRNÍ REGRESE F_k na k.
+ *
+ * ⚠️ NENÍ to totéž co prostý průměr rozdílů. Regrese rozdělí chybu jednoho
+ * formantu mezi všechny jeho členy, kdežto průměr rozdílů ji do rozestupu
+ * pustí celou. A hlavně: **vrací i `slope`**, takže je vidět, jestli jsou
+ * formanty vůbec rovnoměrně rozložené (pořadí formantu, ne harmonické) —
+ * když F3 vyjde jako harmonická, je směrnice jiná, než když je to formant.
+ *
+ * @param {number[]} F naměřené formanty v Hz, vzestupně (F1, F2, F3, …)
+ * @returns {{dF:number, vtl_cm:number, k:number, r2:number}|null}
+ */
+export function dispersion(F) {
+  const pts = [];
+  for (let i = 0; i < F.length; i++) {
+    if (F[i] === F[i] && F[i] > 0) pts.push([pts.length + 1, F[i]]);   // k = 1, 2, 3…
+  }
+  if (pts.length < 2) return null;
+  const n = pts.length;
+  let sx = 0, sy = 0, sxx = 0, sxy = 0;
+  for (const [k, f] of pts) { sx += k; sy += f; sxx += k * k; sxy += k * f; }
+  const den = n * sxx - sx * sx;
+  if (den === 0) return null;
+  const dF = (n * sxy - sx * sy) / den;
+  if (!(dF > 0)) return null;
+  // r² — jak dobře rovnoměrná řada sedí (nízké = nejspíš harmonická, ne formant)
+  const mi = sy / n, mk = sx / n;
+  let ssTot = 0, ssRes = 0;
+  const inter = (sy - dF * sx) / n;
+  for (const [k, f] of pts) {
+    ssTot += (f - mi) ** 2;
+    ssRes += (f - (inter + dF * k)) ** 2;
+  }
+  const r2 = ssTot > 0 ? 1 - ssRes / ssTot : NaN;
+  return { dF, vtl_cm: 34300 / (2 * dF), k: n, r2 };
+}
+
+/**
  * Délka traktu z JEDNOHO tónu (jeho F1–F3). Vrací `{ dF, vtl_cm }`, nebo null,
  * když z tónu nelze nic použitelného vzít.
  *
@@ -1301,12 +1480,11 @@ export const VTL_MAX_CM = 22;
 export function noteTraktu(f1, f2, f3) {
   const v = [f1, f2, f3].filter(x => x === x && x > 0);
   if (v.length < 2) return null;
-  let s = 0;
-  for (let i = 1; i < v.length; i++) s += v[i] - v[i - 1];
-  const dF = s / (v.length - 1);
+  const d = dispersion(v);
+  if (!d) return null;
   const dFmin = 34300 / (2 * VTL_MAX_CM), dFmax = 34300 / (2 * VTL_MIN_CM);
-  if (!(dF >= dFmin && dF <= dFmax)) return null;
-  return { dF, vtl_cm: 34300 / (2 * dF) };
+  if (!(d.dF >= dFmin && d.dF <= dFmax)) return null;
+  return { dF: d.dF, vtl_cm: d.vtl_cm };
 }
 
 /**
@@ -1346,9 +1524,16 @@ export function delkaTraktu(noty) {
     // `z_tonek` = tóny, ze kterých se dal rozestup vůbec spočítat (aspoň dva
     // formanty). `n` pak = ty, co navíc prošly fyziologickým filtrem. Rozdíl
     // mezi nimi je to, co se hlásí v UI jako „vyřazeno mimo rozsah".
+    //
+    // ⚠️ DO MEDIÁNU JDE JEN PLNÁ SADA F1–F3. Když F3 chybí, je rozestup
+    // z dvojice F2−F1 SYSTEMATICKY JINÝ (naměřeno: medián dF 804 Hz pro F1–F3
+    // proti 842 Hz pro F2−F1, tj. VTL 21,3 vs. 20,4 cm) — míchat obojí do
+    // jednoho mediánu znamená míchat dvě různé veličiny. Tón bez F3 se proto
+    // počítá do `z_tonek`, ale do `n` ne (a UI to vidí jako vyřazený).
     const v = [n.f1, n.f2, n.f3].filter(x => x === x && x > 0);
     if (v.length < 2) continue;
     zTonek++;
+    if (v.length < 3) continue;
     const t = noteTraktu(n.f1, n.f2, n.f3);
     if (t) dFs.push(t.dF);
   }
@@ -1576,7 +1761,7 @@ export function analyze(samples, sampleRate, opts = {}) {
   const notes = [];
   for (let i = 0; i < kept.length; i++) {
     const p = kept[i];
-    const nm = measureNote(samples, sampleRate, times, f0, i + 1, p.t0, p.t1, band);
+    const nm = measureNote(samples, sampleRate, times, f0, i + 1, p.t0, p.t1, band, fach);
     if (nm) {
       // rozkmit noty: u velkého rozkmitu (klouzavý přechod, rozpad tónu) se
       // měřené číslo týká něčeho jiného než „drženého tónu" — ať to UI přizná
@@ -1615,7 +1800,7 @@ export function analyze(samples, sampleRate, opts = {}) {
   };
 }
 
-function measureNote(samples, sampleRate, times, f0raw, idx, t0, t1, band) {
+function measureNote(samples, sampleRate, times, f0raw, idx, t0, t1, band, fach = 'tenor') {
   const dur = t1 - t0;
   const a = t0 + 0.20 * dur;
   const b = t1 - 0.20 * dur;
@@ -1673,6 +1858,12 @@ function measureNote(samples, sampleRate, times, f0raw, idx, t0, t1, band) {
     sampleRate, f0);
   const jit = jitter(null, f0s);
 
+  /* FHE se měří v pásmu PODLE OBORU — referenční hodnoty (Müller 2022) jsou
+   * z pásem soprán 2300–4500 Hz, ostatní 2000–3600 Hz. Vždycky 2000–3600
+   * znamenalo u sopránu srovnávat s jiným pásmem, než ze kterého reference jsou
+   * (naměřeno 457 Hz rozdílu u syntetického sopránu = 1,3 SD). */
+  const fheBand = FHE_BANDS[fach] || FHE_BANDS.tenor;
+
   return {
     idx, t_start: t0, t_end: t1, dur,
     note: hzToNote(f0), f0,
@@ -1689,7 +1880,7 @@ function measureNote(samples, sampleRate, times, f0raw, idx, t0, t1, band) {
     file_rate: band.file_rate ?? NaN,
     bandwidth_hz: band.limit,
     alpha: alphaRatio(spec),
-    fhe: fhe(spec),
+    fhe: fhe(spec, fheBand[0], fheBand[1]),
     hnr: hnrV,
     jitter_pct: jit,
     shimmer_pct: NaN,      // vyžaduje sledování amplitudy po periodách
