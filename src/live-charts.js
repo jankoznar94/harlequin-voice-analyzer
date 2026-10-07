@@ -601,7 +601,24 @@ export function drawLiveSpec(cv, st, { warm = false } = {}) {
   if (!st.cv) st.cv = cv;
   if (!ensureBuffer(st)) return;
   const devW = st.devW, devH = st.devH, dpr = st.dpr;
-  cv.width = st.canvasW; cv.height = st.canvasH;
+  /* POZOR — ROZMĚR PLÁTNA SE NASTAVUJE JEN KDYŽ SE OPRAVDU ZMĚNÍ.
+   *
+   * Reálná vada, kterou uživatel viděl jako „nepříjemné poblikávání části,
+   * která ještě nemá data": nastavení `canvas.width` podle specifikace
+   * VYMAŽE celý bitmap plátna, i když je hodnota stejná. Tady se rozměr
+   * nastavoval bezpodmínečně při KAŽDÉM rámci, tedy 50× za sekundu —
+   * naměřeno `tools/diag-live-spec-flicker.mjs`: spektrogram 50/s, kdežto
+   * ostatní živé grafy (`fitCanvas`) 0/s. Ty nastavují rozměr jen při změně,
+   * a proto neblikají.
+   *
+   * Po skutečné změně rozměru je bitmap prázdný, takže se musí překreslit
+   * CELÝ obraz (`repaintAll`) — jinak by zůstal prázdný.
+   */
+  if (cv.width !== st.canvasW || cv.height !== st.canvasH) {
+    cv.width = st.canvasW;
+    cv.height = st.canvasH;
+    st.repaintAll = true;
+  }
   const ctx = cv.getContext('2d');
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const w = cv.clientWidth || cv.width || 300;
@@ -654,10 +671,30 @@ export function drawLiveSpec(cv, st, { warm = false } = {}) {
     const k = st.cols - 1;
     writeColumn((st.head - 1 + st.cols) % st.cols, posOf(k), plotWpx);
   } else {
-    // plná kresba: nejstarší sloupec vlevo, nejnovější vpravo
+    /* Plná kresba: nejstarší sloupec vlevo, nejnovější vpravo.
+     *
+     * POZOR — NEJNOVĚJŠÍ SLOUPEC SE NESMÍ ROZTAHNOUT PŘES ZBYTEK GRAFU.
+     *
+     * Bylo to tu `i === st.filled - 1 ? plotWpx : posOf(i + 1)` a dělalo to
+     * reálnou vadu, kterou uživatel popsal jako „část, která ještě nebyla
+     * vyplněna daty, nepříjemně poblikává". Dokud okno není plné, žije
+     * v obraze jen `filled` sloupců — ten poslední se ale kvůli téhle úpravě
+     * roztáhl až k PRAVÉMU OKRAJI. Každý rámec se jeho obsah přepsal novou
+     * barvou, takže velká plocha měnila odstín 50× za sekundu. Na začátku
+     * měření je neplná skoro celá plocha, takže blikal téměř celý graf
+     * (naměřeno: podíl sloupců s daty 100 % hned v první sekundě, přitom
+     * okno je ~10 s).
+     *
+     * Správně má každý sloupec STEJNOU ŠÍŘKU jako hotový obraz: od `posOf(i)`
+     * do `posOf(i + 1)`. Pro poslední vyplněný sloupec to je `posOf(filled)`,
+     * což je zároveň `plotWpx` ve chvíli, kdy je okno plné (`posOf(cols)` =
+     * `round(cols·devW/cols)` = `devW`) — obě větve se tedy v tom bodě
+     * přesně sejdou a obraz při přechodu neusk očí.
+     *
+     * Výsledek: data dorůstají ZLEVA a zbytek vpravo zůstává prázdné pozadí. */
     for (let i = 0; i < st.filled; i++) {
       const idx = colIndex(st, i);
-      writeColumn(idx, posOf(i), i === st.filled - 1 ? plotWpx : posOf(i + 1));
+      writeColumn(idx, posOf(i), posOf(i + 1));
     }
     st.repaintAll = false;
   }
