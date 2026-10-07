@@ -419,6 +419,10 @@ tr.dropout td { background: #2a1f1c; }
 @media (min-width: 560px) {
   .live-grid { grid-template-columns: 1fr 1fr; }
 }
+/* Spektrogram je široký jako celá mřížka — je to obraz v čase a v půlce by
+   z něj bylo okno na pět vteřin. Výška musí odpovídat `height` plátna
+   (230 px), aby panel držel stejnou výšku jako ostatní záložky. */
+.live-box-wide { grid-column: 1 / -1; }
 .live-box {
   background: var(--bg-soft);
   border: 1px solid var(--line);
