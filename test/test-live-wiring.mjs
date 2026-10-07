@@ -155,9 +155,18 @@ console.log('\n8. Konvence projektu\n');
   ok('žádné emoji v živém režimu', !/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(all));
   ok('žádný hover efekt v novém CSS',
     !/\.live-[^{]*:hover/.test(fs.readFileSync(path.join(ROOT, 'src/style.css'), 'utf8')));
+  /* ⚠️ Zákaz `putImageData` NENÍ plošný — projekt sám ho používá (a musí,
+   * protože buffer plněný v device px se na plátno dostane jen přes pomocné
+   * plátno). Zakázané je VOLÁNÍ `putImageData` přímo na plátno GRAFU: to
+   * ignoruje transformaci plátna a na dsf 2 srazí obsah do levé horní
+   * čtvrtiny (naměřeno). Kresba obrazu v živém spektrogramu je proto vázaná
+   * na `ctx.drawImage` z pomocného plátna. */
   // hledá se skutečné volání, ne zmínka v komentáři (ta je tu záměrně)
   const codeOnly = liveCharts.split('\n').filter(l => !/^\s*\*|^\s*\/\//.test(l)).join('\n');
-  ok('žádné putImageData v novém kreslení', !/putImageData/.test(codeOnly));
+  const putDirect = codeOnly.split('\n').filter(l => /\bctx\.putImageData\s*\(/.test(l)).join('\n');
+  ok('žádné přímé putImageData na plátno grafu', putDirect === '', putDirect.trim().slice(0, 80));
+  ok('obraz se na plátno dostává přes drawImage',
+    /ctx\.drawImage\s*\(\s*st\.off/.test(codeOnly));
   ok('ručička ladění je v centech, ne v Hz', /cents/i.test(liveCharts) && !/hzToCents/.test(liveCharts));
 }
 

@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<title>kontrola živého spektrogramu</title>
+<style>
+  /* Stejné hodnoty jako v aplikaci — test má měřit skutečný vzhled. */
+  :root {
+    --bg: #1a1715; --bg-soft: #231f1c; --bg-input: #2a2522; --line: #3a3330;
+    --fg: #e8e2dc; --fg-dim: #a89f97; --fg-mute: #7d746d;
+    --accent: #b8894f; --ok: #6a9e6a; --bad: #b5675e; --warn: #c39a5a;
+    --radius: 6px;
+  }
+  body { background: var(--bg); color: var(--fg); font: 15px/1.5 sans-serif; padding: 16px; }
+  #wrap { width: 700px; }
+  .chart-spec {
+    width: 100%; display: block; margin: 0 0 12px;
+    background: var(--bg-soft);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+  }
+</style>
+</head>
+<body>
+<h3 id="hdr">měřím…</h3>
+<div id="wrap"><canvas id="spec" class="chart-spec" height="230"></canvas></div>
+<pre id="out" style="font-size:12px;color:#a89f97;white-space:pre-wrap"></pre>
+
+<script type="module">
+import { loadColors, drawLiveSpec, createSpecPainter, pushSpecColumn, LIVE_SPEC_PAD, LIVE_SPEC_COLS } from './src/live-charts.js';
+import { SPEC_DB_LO, SPEC_DB_HI } from './src/live-spec.js';
+
+const out = document.getElementById('out');
+const log = (s) => { out.textContent += s + '\n'; };
+
+const cv = document.getElementById('spec');
+const rows = 192;
+const mid = (SPEC_DB_LO + SPEC_DB_HI) / 2;
+const DARK = mid - 25, BRIGHT = mid + 25;
+const R = {};
+
+const shot = () => cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
+
+/**
+ * Profil obrazu: pro každý device sloupec průměrná světlost přes řádky obrazu.
+ *
+ * `P[x] === 0` znamená, že v tom sloupci není ANI JEDEN neprůhledný pixel —
+ * tedy že tam obraz vůbec není nakreslený. Přesně tím se pozná past, kdy se
+ * buffer vloží jen do levé horní čtvrtiny plátna.
+ */
+function profile(d, W, y0, y1) {
+  const p = new Float64Array(W);
+  for (let x = 0; x < W; x++) {
+    let s = 0, n = 0;
+    for (let y = y0; y < y1; y++) {
+      const i = (y * W + x) * 4;
+      if (d[i + 3] < 200) continue;
+      s += (d[i] + d[i + 1] + d[i + 2]) / 3; n++;
+    }
+    p[x] = n ? s / n : 0;
+  }
+  return p;
+}
+
+/** Levá hrana světlého bloku: první sloupec v pásu, kde je profil výrazně světlejší. */
+function blockLeft(p, x0, x1, thr) {
+  for (let x = x0; x < x1; x++) if (p[x] > thr) return x;
+  return -1;
+}
+function blockRight(p, x0, x1, thr) {
+  for (let x = x1 - 1; x >= x0; x--) if (p[x] > thr) return x;
+  return -1;
+}
+/** Počet sloupců, kde obraz VŮBEC není nakreslený (průhledné plátno). */
+function unpainted(p, x0, x1) {
+  let n = 0;
+  for (let x = x0; x < x1; x++) if (p[x] === 0) n++;
+  return n;
+}
+
+const warmPixels = () => {
+  const dd = shot();
+  let n = 0;
+  for (let i = 0; i < dd.length; i += 4) {
+    const r = dd[i], g = dd[i + 1], b = dd[i + 2];
+    // barva --warn #c39a5a: teplá, červená znatelně nad modrou
+    if (r > 150 && r < 235 && r - b > 60 && r - g > 15 && g > b) n++;
+  }
+  return n;
+};
+
+try {
+  loadColors();
+  const dpr = window.devicePixelRatio || 1;
+  const st = createSpecPainter(rows, cv);
+
+  /* ── 1. obraz: tmavé pozadí + JASNÝ BLOK vpravo ──
+     ⚠️ Blok, ne pruhy: pruhy jsou periodické, takže se z nich posun nedá
+     změřit — naměřeno, že korelace profilů pak najde „posun 0" i po skutečném
+     posunu. Blok má jednoznačnou levou i pravou hranu. */
+  const BLOCK_FROM = 470, BLOCK_TO = 500;      // v pořadí vkládání = nejnovější
+  for (let c = 0; c < LIVE_SPEC_COLS; c++) {
+    const db = (c >= BLOCK_FROM) ? BRIGHT : DARK;
+    pushSpecColumn(st, new Float64Array(rows).fill(db), 0);
+  }
+  drawLiveSpec(cv, st, {});
+  const W = cv.width, H = cv.height;
+  let d = shot();
+  const scale = W / (cv.clientWidth || W);
+  const x0 = Math.round(LIVE_SPEC_PAD.l * scale), x1 = Math.round((cv.clientWidth - LIVE_SPEC_PAD.r) * scale);
+  const y0 = Math.round(LIVE_SPEC_PAD.t * scale), y1 = Math.round((cv.clientHeight - LIVE_SPEC_PAD.b) * scale);
+
+  log(`plátno ${W}×${H} (dpr ${dpr}), obraz x ${x0}–${x1}, y ${y0}–${y1}`);
+  R.canvas = { W, H, x0, x1, y0, y1 };
+
+  const p0 = profile(d, W, y0, y1);
+  const darkPx = Math.round((st.posOf(BLOCK_FROM - 20) + st.posOf(BLOCK_FROM - 19)) / 2);
+  const darkVal = p0[darkPx];
+  const thr = darkVal + 30;
+  R.darkVal = darkVal; R.thr = thr;
+  log(`tmavý pruh má světlost ${darkVal.toFixed(1)}, práh pro blok ${thr.toFixed(1)}`);
+
+  /* ── 2. obraz musí být nakreslený V CELÉ šířce ──
+     Sloupec, kde není ani jeden neprůhledný pixel, je místo, kam se obraz
+     nedostal. Na dsf 2 při vložení `putImageData` přímo na plátno by jich
+     byly tři čtvrtiny. */
+  R.unpainted = unpainted(p0, x0, x1);
+  R.imgW = x1 - x0;
+  log(`nenakreslených sloupců uvnitř obrazu: ${R.unpainted} z ${R.imgW}`);
+
+  /* Co je v BUFFERU (device px) — odděluje chybu rozvržení od chyby vložení
+     na plátno (`drawImage`). */
+  {
+    const midRow = Math.round(st.devH / 2) * st.devW;
+    let bl = -1, br = -1;
+    const brightVal = st.img[midRow + 1];
+    for (let x = 0; x < st.devW; x++) {
+      if (st.img[midRow + x] === brightVal) { if (bl < 0) bl = x; br = x; }
+    }
+    R.buf = { brightVal: brightVal.toString(16), bl, br,
+              pos470: st.posOf(470), pos499: st.posOf(499), pos500: st.posOf(500),
+              vals499: +st.values[499 * rows].toFixed(3), vals0: +st.values[0].toFixed(3) };
+    log(`BUFFER: světlý blok na x ${bl}–${br} (očekáváno ${st.posOf(470)}–${st.posOf(500) - 1}); posOf(499)=${st.posOf(499)}`);
+  }
+
+  R.blockLeft = blockLeft(p0, x0, x1, thr);
+  R.blockRight = blockRight(p0, x0, x1, thr);
+  R.expectedBlockLeft = x0 + st.posOf(BLOCK_FROM);
+  R.expectedBlockRight = x0 + st.posOf(BLOCK_TO) - 1;
+  log(`blok je na x ${R.blockLeft}–${R.blockRight}, čekáno ${R.expectedBlockLeft}–${R.expectedBlockRight}`);
+
+  // blok musí být VPRAVO (nejnovější zvuk vpravo) a obraz musí sahat k okrajům
+  R.rightEdgePainted = Math.max(...Array.from(p0.slice(x1 - 20, x1)));
+
+  /* ── 3. posun: K nových sloupců musí obraz posunout DOLEVA o K sloupců ── */
+  const K = 6;
+  for (let k = 0; k < K; k++) {
+    pushSpecColumn(st, new Float64Array(rows).fill(DARK), 0);
+    drawLiveSpec(cv, st, {});
+  }
+  d = shot();
+  const p1 = profile(d, W, y0, y1);
+  R.blockLeftAfter = blockLeft(p1, x0, x1, thr);
+  R.blockRightAfter = blockRight(p1, x0, x1, thr);
+  const colW = (x1 - x0) / LIVE_SPEC_COLS;
+  R.colW = colW;
+  R.moved = R.blockLeft - R.blockLeftAfter;
+  R.movedExpected = K * colW;
+  log(`po ${K} nových sloupcích je blok na x ${R.blockLeftAfter}–${R.blockRightAfter}; posunuto o ${R.moved} px (čekáno ~${R.movedExpected.toFixed(1)})`);
+
+  /* ── 4. mřížka a popisky kmitočtů ── */
+  const labelRows = (() => {
+    const rowsN = [];
+    for (let y = 0; y < H; y++) {
+      let n = 0;
+      for (let x = 0; x < Math.round(40 * dpr); x++) {
+        const i = (y * W + x) * 4;
+        if (d[i + 3] > 20) n++;
+      }
+      rowsN.push(n);
+    }
+    const centers = []; let start = -1;
+    for (let y = 0; y <= rowsN.length; y++) {
+      const on = y < rowsN.length && rowsN[y] > 0;
+      if (on && start < 0) start = y;
+      if (!on && start >= 0) { centers.push((start + y - 1) / 2); start = -1; }
+    }
+    return centers;
+  })();
+  R.labels = labelRows.map(v => Math.round(v));
+  log(`popisky osy na y: ${R.labels.join(', ')}`);
+  // popisky musí být ROZLOŽENÉ po celé výšce, ne nahromaděné (jinak se osa rozjela)
+  R.labelSpan = R.labels.length >= 2 ? R.labels[R.labels.length - 1] - R.labels[0] : 0;
+
+  /* ── 5. hlášení o ustalování měřítka ── */
+  drawLiveSpec(cv, st, { warm: true });
+  R.warmPixels = warmPixels();
+  log(`pixelů hlášení „měřítko se ustaluje“: ${R.warmPixels}`);
+  drawLiveSpec(cv, st, { warm: false });
+  R.warmAfter = warmPixels();
+  log(`pixelů hlášení po ustálení: ${R.warmAfter}`);
+
+  document.getElementById('hdr').textContent = 'HOTOVO';
+  log('\nVÝSLEDKY ' + JSON.stringify(R));
+} catch (e) {
+  document.getElementById('hdr').textContent = 'CHYBA: ' + e.message;
+  log('CHYBA ' + (e.stack || e));
+}
+</script>
+</body>
+</html>

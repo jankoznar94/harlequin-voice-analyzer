@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Hlas">
-<link rel="stylesheet" href="src/style.css?v=36">
+<link rel="stylesheet" href="src/style.css?v=37">
 </head>
 <body>
 
@@ -124,6 +124,15 @@
     <div id="live-warn" class="warn warn-soft hidden"></div>
 
     <div class="live-grid">
+      <div class="live-box live-box-wide">
+        <span class="live-lbl">Spektrogram</span>
+        <canvas id="c-live-spec" class="chart" height="230"></canvas>
+        <p class="hint live-note">Posledních ~10 s, nejnovější vpravo. Světlejší místo
+           znamená víc energie v tom kmitočtu — svislé pruhy jsou tóny, vodorovné
+           linky jsou formanty (v 2,5–3,2 kHz je pásmo zpěváckého formantu).
+           Měřítko jasu se prvních pár sekund ustaluje, pak drží. Stejně jako
+           ostatní živé údaje je to orientace, ne verdikt.</p>
+      </div>
       <div class="live-box">
         <span class="live-lbl">Výška a ladění</span>
         <canvas id="c-live-tune" class="chart" height="120"></canvas>
@@ -433,6 +442,6 @@
 
 <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
-<script type="module" src="src/app.js?v=36"></script>
+<script type="module" src="src/app.js?v=37"></script>
 </body>
 </html>

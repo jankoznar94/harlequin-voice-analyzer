@@ -2,14 +2,14 @@
  * Service worker — offline provoz.
  * Verze cache zvyš při změně souborů, jinak se drží stará.
  */
-const CACHE = 'vocal-lab-v36';
+const CACHE = 'vocal-lab-v37';
 
 /**
  * Verze nasazeného buildu. Zvyšovat spolu s CACHE výše a s ?v= v index.html.
  * Vypisuje se v patičce aplikace, aby uživatel poznal, že aktualizace proběhla —
  * bez toho po kliknutí na tlačítko nemá jak zjistit, jestli se něco stalo.
  */
-const APP_VERSION = '1.0.36';
+const APP_VERSION = '1.0.37';
 const ASSETS = [
   './',
   './index.html',
@@ -32,6 +32,8 @@ const ASSETS = [
   './src/live-charts.js',
   './src/live-run.js',
   './src/live-ui.js',
+  // živý spektrogram — čistá logika sloupce a jeho normalizace
+  './src/live-spec.js',
   './src/dsp-backend.js',
   './wasm/build/dsp.wasm',
 ];

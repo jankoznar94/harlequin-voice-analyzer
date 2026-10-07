@@ -21,10 +21,11 @@
 import { FRAME_SIZE, BLOCK_MS, createLiveState, feedFrame, summarizeLive, centsClass, levelClass, sprClass } from './live.js';
 import { createDsp } from './dsp-backend.js';
 import {
-  loadColors, drawTuning, drawLevel, drawSprHistory, drawFhe, classColor,
-  SPR_MIN, SPR_MAX,
+  loadColors, drawTuning, drawLevel, drawSprHistory, drawFhe, drawLiveSpec,
+  classColor, SPR_MIN, SPR_MAX,
 } from './live-charts.js';
 import { REFS, SPR_NFFT } from './analysis.js';
+import { createSpecState, feedSpec, SPEC_BUF_SAMPLES, SPEC_NFFT } from './live-spec.js';
 
 /** Kolik hodnot SPR se drží pro graf (~20 s při 5 vzorcích/s). */
 const SPR_HISTORY = 100;
@@ -76,6 +77,26 @@ export function isLiveRunning() { return !!run; }
  * @param {object} ui  handlery: { onSnapshot(s), onError(msg), onEnd(summary) }
  * @param {string} fach zvolený rozsah nahrávky
  */
+/**
+ * Kolik řádků má obraz spektrogramu.
+ *
+ * Bere se ze SKUTEČNÉ výšky plátna, ne z konstanty — jinak by se rozsah
+ * kmitočtů rozešel s mřížkou poté, co se změní výška v HTML nebo v CSS.
+ * Když plátno ještě v DOM není (testy), použije se 192 = výška 230 px mínus
+ * okraje, což je stejné číslo, jaké počítá kresba.
+ */
+function specRowsFromDom() {
+  try {
+    const cv = document.getElementById('c-live-spec');
+    const h = cv ? (cv.clientHeight || 0) : 0;
+    if (h > 40) {
+      const pad = 12 + 26;                     // LIVE_SPEC_PAD t/b
+      return Math.max(16, Math.round((h - pad) * (window.devicePixelRatio || 1)));
+    }
+  } catch { /* plátno není — použije se výchozí počet řádků */ }
+  return 192;
+}
+
 export async function startLive(ui, fach = 'tenor') {
   if (run) return;
 
@@ -140,6 +161,9 @@ export async function startLive(ui, fach = 'tenor') {
     state, history, historyOld, backend, ctx, stream, node, src, ui,
     pending: new Float64Array(0),
     sprBuf: new Float64Array(0),      // posledních SPR_NFFT vzorků pro SPR
+    specBuf: new Float64Array(0),     // posledních SPEC_BUF_SAMPLES vzorků pro spektrogram
+    specRows: specRowsFromDom(),       // řádků obrazu — podle skutečné výšky plátna
+    specState: null,                  // vytvoří se při prvním sloupci
     lastText: 0,
     framesSinceDraw: 0,
     visible: true,
@@ -187,6 +211,12 @@ function pushBlock(r, block) {
 
   // kruhový zásobník pro SPR: připoj blok, nech si posledních SPR_NFFT vzorků
   r.sprBuf = appendKeep(r.sprBuf, block, SPR_NFFT);
+  /* Spektrogram má VLASTNÍ zásobník delší než okno (SPEC_BUF_SAMPLES) — kdyby
+   * bral vzorky z `sprBuf`, který drží přesně SPR_NFFT, vyšel by sloupec
+   * z okna, které se může krýt s předchozím rámcem (a při propadlém rámci by
+   * se zopakoval). Delší zásobník zaručí, že sloupec vždy vznikne z PLNÉHO
+   * okna aktuálních vzorků. */
+  r.specBuf = appendKeep(r.specBuf, block, SPEC_BUF_SAMPLES);
 
   const merged = new Float64Array(r.pending.length + block.length);
   merged.set(r.pending, 0);
@@ -200,7 +230,15 @@ function pushBlock(r, block) {
       ? r.sprBuf.subarray(r.sprBuf.length - SPR_NFFT)
       : null;
     const snap = feedFrame(r.state, r.backend, merged.subarray(off, end), sprWin);
-    onFrame(r, snap);
+
+    // spektrogram: nový sloupec z téhož toku vzorků
+    let spec = null;
+    if (r.specBuf.length >= SPEC_NFFT) {
+      if (!r.specState) r.specState = createSpecState(r.state.sampleRate, r.specRows || 192);
+      spec = feedSpec(r.specState, r.specBuf);
+    }
+
+    onFrame(r, snap, spec);
     off += need;
   }
   r.pending = merged.slice(off);
@@ -236,7 +274,7 @@ function appendKeep(buf, block, keep) {
 }
 
 /** Zpracuje jeden rámec — aktualizuje graf a podle potřeby překreslí. */
-function onFrame(r, snap) {
+function onFrame(r, snap, spec = null) {
   // do historie jde jen zpívaný rámec, jinak by pauzy dělaly propady.
   // Obě čísla se plní STEJNĚ dlouho, aby se čáry v grafu nekryly posunuté.
   if (snap.voiced) {
@@ -253,6 +291,7 @@ function onFrame(r, snap) {
 
   r.ui.onFrame({
     snap,
+    spec,
     history: r.history,
     historyOld: r.historyOld,
     refreshText: wantText,

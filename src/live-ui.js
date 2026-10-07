@@ -8,6 +8,7 @@
 import { isLiveRunning, startLive, stopLive } from './live-run.js';
 import {
   loadColors, drawTuning, drawLevel, drawSprHistory, drawFhe,
+  drawLiveSpec, createSpecPainter, pushSpecColumn,
   COLORS, classColor,
 } from './live-charts.js';
 import { centsClass, levelClass, sprClass, sprBand, fheBand } from './live.js';
@@ -19,6 +20,7 @@ const $ = (id) => document.getElementById(id);
 let el = null;
 let saveHandler = null;      // předá app.js, aby živé měření šlo uložit do historie
 let startedAt = 0;
+let specPainter = null;      // obraz spektrogramu (kruhový zásobník sloupců)
 
 function cacheEls() {
   if (el) return el;
@@ -30,6 +32,7 @@ function cacheEls() {
     btnSave: $('btn-live-save'),
     engine: $('live-engine'),
     warn: $('live-warn'),
+    spec: $('c-live-spec'),
     tune: $('c-live-tune'),
     spr: $('c-live-spr'),
     level: $('c-live-level'),
@@ -86,7 +89,18 @@ function updateNumbers(snap, fach) {
 
 function render(ctxData) {
   const e = cacheEls();
-  const { snap, history, historyOld, fach } = ctxData;
+  const { snap, spec, history, historyOld, fach } = ctxData;
+
+  /* Spektrogram: nový sloupec se zapíše do obrazu a obraz se hned překreslí.
+   *
+   * Kreslí se při KAŽDÉM rámci (50× za sekundu), protože jinak by obraz
+   * zaostával za hlasem — a právě na tom živý spektrogram stojí. Cena je
+   * naměřená: sloupec 0,02 ms, posun okna a překreslení zlomek milisekundy. */
+  if (e.spec && spec) {
+    if (!specPainter) specPainter = createSpecPainter(spec.column.length, e.spec);
+    pushSpecColumn(specPainter, spec.column, spec.norm);
+    drawLiveSpec(e.spec, specPainter, { warm: spec.warm });
+  }
 
   drawTuning(e.tune, {
     // Na ručičku jde VYHLAZENÁ odchylka — surová skáče o desítky centů
@@ -133,6 +147,10 @@ async function toggleLive() {
   e.panel.classList.remove('hidden');
   e.btnLive.disabled = true;
   e.btnLive.textContent = 'Spouštím…';
+  /* Obraz spektrogramu se startuje ZNOVU při každém spuštění — jinak by
+   * v něm zůstal starý obraz z předchozího měření a nebylo by poznat, co je
+   * odteď a co od minule. */
+  specPainter = null;
 
   const fach = $('fach').value;
   const okStart = await startLive({
@@ -189,6 +207,7 @@ async function finishLive(save) {
   e.btnLive.textContent = 'Živě';
   e.panel.classList.add('hidden');
   e.panelInput.classList.remove('hidden');
+  specPainter = null;
 
   if (!summary) return;
 

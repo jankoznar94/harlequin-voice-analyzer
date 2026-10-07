@@ -12,6 +12,11 @@
 
 /* ── barvy z CSS ──────────────────────────────────────────────────────────── */
 
+/* Stupnice obrazu spektrogramu se bere z modulu, který počítá normalizaci
+ * (live-spec.js). Kdyby se sem opsala čísla, rozejdou se — a obraz bude tmavý
+ * nebo přesvětlený, aniž by si toho někdo všiml. */
+import { SPEC_DB_LO, SPEC_DB_HI } from './live-spec.js';
+
 function cssVar(name, fallback) {
   try {
     const v = getComputedStyle(document.documentElement).getPropertyValue(name);
@@ -409,5 +414,303 @@ export function drawFhe(cv, { fheHz = NaN, ref = null, band = 'none' }) {
     ctx.textAlign = 'center';
     ctx.fillStyle = COLORS.fg;
     ctx.fillText(`${Math.round(fheHz)} Hz`, xOf(fheHz), y - 20);
+  }
+}
+
+/* ── živý spektrogram ────────────────────────────────────────────────────── */
+
+/**
+ * Rozměry živého spektrogramu — STEJNÉ jako spektrogram z nahrávky (SPEC_H
+ * a SPEC_PAD v charts.js). Panel se při přepínání záložek nesmí hýbat a obraz
+ * musí vypadat stejně; hlídá to `test/test-live-spektrogram-render.mjs`.
+ */
+export const LIVE_SPEC_H = 230;
+export const LIVE_SPEC_PAD = { l: 42, r: 12, t: 12, b: 26 };
+
+/** Kolik sloupců se drží (při 20 ms na sloupec je to ~10 s). */
+export const LIVE_SPEC_COLS = 500;
+
+/**
+ * Barevná stupnice — OPSANÁ z drawSpec v charts.js, nesmí se rozejít.
+ *
+ * Je to teplý neutrál → jantar → bílá. Stupnice byla odladěná měřením (viz
+ * komentář v charts.js): svítivost roste pomalu, barva se láme až nad 85 %,
+ * takže šumové dno zůstane tmavé a formanty nad ním vylezou. Když se změní
+ * tam, musí se změnit i tady.
+ */
+const SPEC_RAMP_R = (t) => (t < 0.55 ? 22 + t * 110 : 22 + 60.5 + (t - 0.55) * 300);
+const SPEC_RAMP_G = (t) => (t < 0.55 ? 18 + t * 90 : 18 + 49.5 + (t - 0.55) * 240);
+const SPEC_RAMP_B = (t) => (t < 0.55 ? 16 + t * 42 : 16 + 23.1 + (t - 0.55) * 150);
+const clamp255 = (v) => (v < 0 ? 0 : v > 255 ? 255 : v | 0);
+
+/** Barva pozadí obrazu — stejná jako dno stupnice, ať se okraje nelesknou. */
+const SPEC_BG = (255 << 24) | (clamp255(SPEC_RAMP_B(0)) << 16) | (clamp255(SPEC_RAMP_G(0)) << 8) | clamp255(SPEC_RAMP_R(0));
+
+/**
+ * Předpočítaná tabulka barev (256 kroků) — v jednom 32bitovém čísle.
+ *
+ * PROČ: původní cesta (čtyři bajty na pixel) naměřila 1,21 ms na obraz
+ * 500×192 při dpr 2; zápis jednoho 32bitového slova 0,57 ms. Původní cestu
+ * zvolit nejde i proto, že `putImageData` ignoruje transformaci plátna
+ * (viz SKILL) — buffer se proto plní v device px a na plátno jde přes
+ * `drawImage`.
+ */
+const SPEC_LUT = (() => {
+  const lut = new Uint32Array(256);
+  for (let k = 0; k < 256; k++) {
+    const t = k / 255;
+    lut[k] = (255 << 24) | (clamp255(SPEC_RAMP_B(t)) << 16) | (clamp255(SPEC_RAMP_G(t)) << 8) | clamp255(SPEC_RAMP_R(t));
+  }
+  return lut;
+})();
+
+/**
+ * Připraví stav kresby živého spektrogramu.
+ *
+ * `values` drží NORMALIZOVANÉ hodnoty (0 = dno stupnice, 1 = vrchol), ne
+ * surová dB. Důvod je praktický: normalizace se v čase mění (roste percentil),
+ * takže by se při změně měřítka musel překreslovat celý obraz z historie —
+ * a ta by se musela celá držet. S normalizovanými hodnotami je změna měřítka
+ * jen o tom, co se do buferu zapíše nově.
+ *
+ * POZOR Plátno se předává UŽ TADY, ne až při kreslení. Naměřeno: když si buffer
+ * vytvářela až kresba, stav se při prvním vykreslení resetoval — a sloupce,
+ * které do něj přišly předtím, zmizely (obraz zůstal prázdný, `filled` bylo 0).
+ *
+ * @param rows počet řádků obrazu (musí odpovídat výšce plátna)
+ * @param cv   plátno, na které se bude kreslit
+ */
+export function createSpecPainter(rows = 192, cv = null) {
+  return {
+    rows,
+    cv,
+    cols: LIVE_SPEC_COLS,
+    values: new Float32Array(LIVE_SPEC_COLS * rows),   // 0 = dno, 1 = vrchol
+    filled: 0,          // kolik sloupců už je vyplněno (do zaplnění okna)
+    head: 0,            // kam přijde další sloupec v kruhovém zásobníku
+    total: 0,           // kolik sloupců přišlo celkem
+    img: null, devW: 0, devH: 0, dpr: 0,
+    plotWpx: 0, posOf: null,     // rozvržení sloupců — počítá se při kresbě
+    off: null,          // pomocné plátno s hotovým obrazem
+    offCtx: null,
+    lastDrawnTotal: 0,
+    lastDrawnFull: false,
+    repaintAll: true,
+  };
+}
+
+/**
+ * Připraví buffer a rozvržení sloupců pro aktuální hustotu displeje.
+ *
+ * Volá se z vkládání sloupce i z kresby, takže je buffer hotový dřív, než
+ * přijde první sloupec. Při ZMĚNĚ VELIKOSTI se přepočítá rozvržení a nastaví
+ * se `repaintAll` — historie sloupců zůstává, jen se celá překreslí.
+ *
+ * POZOR Stav (`filled`, `head`, `total`) se při tom NESMÍ nulovat: sloupce, které
+ * už přišly, jsou platná historie. Naměřeno, že nulování uvnitř kresby vedlo
+ * k prázdnému obrazu.
+ */
+function ensureBuffer(st) {
+  const cv = st.cv;
+  if (!cv) return false;
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth || cv.width || 300;
+  const h = cv.clientHeight || LIVE_SPEC_H;
+  /* POZOR Buffer je jen KRESLICÍ PLOCHA, ne celé plátno.
+   *
+   * Naměřeno: když se buffer udělal na šířku celého plátna (700 px) a na plátno
+   * se pak vložil s šířkou kreslicí plochy (646 px), prohlížeč ho ZMENŠIL
+   * v poměru 646/700 a celý obraz se posunul doleva (o ~47 px, tedy o 7 %
+   * šířky) — jasný blok, který měl končit na pravém okraji, skončil 36 sloupců
+   * před ním. Proto se okraje do bufferu vůbec nedávají: buffer = plocha,
+   * vkládá se 1 : 1. */
+  const devW = Math.round((w - LIVE_SPEC_PAD.l - LIVE_SPEC_PAD.r) * dpr);
+  const devH = Math.round((h - LIVE_SPEC_PAD.t - LIVE_SPEC_PAD.b) * dpr);
+  st.canvasW = Math.round(w * dpr);
+  st.canvasH = Math.round(h * dpr);
+  if (st.devW !== devW || st.devH !== devH || !st.img) {
+    st.devW = devW; st.devH = devH; st.dpr = dpr;
+    st.img = new Uint32Array(devW * devH);
+    st.img.fill(SPEC_BG);
+    st.off = document.createElement('canvas');
+    st.off.width = devW; st.off.height = devH;
+    st.offCtx = st.off.getContext('2d');
+    st.lastDrawnFull = false;
+    st.repaintAll = true;
+  }
+  /* Rozvržení sloupců na pixel přesně (Bresenham).
+   *
+   * POZOR Stejná celočíselná šířka sloupce NEFUNGUJE: `plotWpx` skoro nikdy není
+   * dělitelné počtem sloupců (naměřeno: 646 px na 500 sloupců → šířka 1 px,
+   * takže 146 px = 23 % šířky zůstalo prázdných jako pozadí vlevo). Šířky se
+   * proto střídají o jeden pixel a dohromady dají PŘESNĚ `plotWpx`.
+   *
+   * Pozice se počítají z ABSOLUTNÍHO indexu sloupce (`round(k·P/C)`), ne
+   * sčítáním šířek — jinak by se zaokrouhlovací chyba nasčítala a obraz by se
+   * vůči sobě rozjel. */
+  st.posOf = (k) => Math.round(k * devW / st.cols);
+  return true;
+}
+
+/**
+ * Zaznamená nový sloupec obrazu.
+ *
+ * @param st     stav z createSpecPainter
+ * @param column surové hodnoty z `specColumn` (jednotky reportu)
+ * @param norm   normalizace, kterou se má sloupec přepočítat (z `feedSpec`)
+ */
+export function pushSpecColumn(st, column, norm) {
+  ensureBuffer(st);
+  /* POZOR KRUHOVÝ ZÁSOBNÍK: `head` ukazuje na NEJSTARŠÍ žijící sloupec, ne na
+   * první volný. Když je okno plné, přepisuje se právě ten nejstarší — jinak
+   * by nový sloupec přepsal některý z těch, které mají zůstat vidět.
+   * Naměřeno: když se psalo vždy na `head` a `head` se posunoval dál, obraz
+   * zůstal uprostřed plný a nejnovější sloupce se ztratily (blok, který měl
+   * sahat k pravému okraji, skončil o ~40 sloupců vlevo). */
+  const writePos = st.filled < st.cols ? st.filled : st.head;
+  const base = writePos * st.rows;
+  const span = SPEC_DB_HI - SPEC_DB_LO;
+  for (let r = 0; r < st.rows; r++) {
+    const t = (column[r] - norm - SPEC_DB_LO) / span;
+    st.values[base + r] = t < 0 ? 0 : t > 1 ? 1 : t;
+  }
+  /* Nový sloupec jde VŽDY na konec obrazu — v kruhovém zásobníku je to
+   * právě ten, který se přepsal, takže se `head` posune dál. */
+  st.head = (writePos + 1) % st.cols;
+  if (st.filled < st.cols) st.filled++;
+  st.total++;
+}
+
+/** Pořadí sloupců v obraze od nejstaršího: `i` = 0 je nejstarší, `filled−1` nejnovější. */
+function colIndex(st, i) {
+  const first = st.filled < st.cols ? 0 : st.head;
+  return (first + i) % st.cols;
+}
+
+/**
+ * Vykreslí živý spektrogram.
+ *
+ * Obraz roste zprava doleva (nejnovější vpravo), stejně jako u nahrávky.
+ * Když se okno posune o jeden sloupec, překresluje se JEN ten nejnovější —
+ * obraz se posune v bufferu (`copyWithin`) a na plátno se dostane jedním
+ * `drawImage`. Plná kresba se dělá jen na začátku a po změně měřítka displeje.
+ *
+ * @param warm true, dokud se měřítko ustaluje (kresba to přizná popiskem)
+ */
+export function drawLiveSpec(cv, st, { warm = false } = {}) {
+  if (!st.cv) st.cv = cv;
+  if (!ensureBuffer(st)) return;
+  const devW = st.devW, devH = st.devH, dpr = st.dpr;
+  cv.width = st.canvasW; cv.height = st.canvasH;
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const w = cv.clientWidth || cv.width || 300;
+  const h = cv.clientHeight || LIVE_SPEC_H;
+
+  const padL = LIVE_SPEC_PAD.l, padR = LIVE_SPEC_PAD.r, padT = LIVE_SPEC_PAD.t, padB = LIVE_SPEC_PAD.b;
+  const plotW = w - padL - padR;
+  const plotH = h - padT - padB;
+  const plotWpx = devW;              // buffer JE kreslicí plocha (viz ensureBuffer)
+  const plotHpx = devH;
+  const posOf = st.posOf;
+
+  /**
+   * Zapíše sloupec do bufferu; `x0` je levá hrana, `x1` pravá (v device px).
+   *
+   * Šířka se bere z posic dvou sousedních sloupců — tím je zaručeno, že
+   * dohromady dají přesně šířku obrazu a nikde nezůstane prázdný pruh.
+   */
+  const writeColumn = (idx, x0, x1) => {
+    const base = idx * st.rows;
+    for (let r = 0; r < st.rows; r++) {
+      const v = SPEC_LUT[(st.values[base + r] * 255) | 0];
+      // řádek 0 = horní (nejvyšší kmitočet) — stejná orientace jako u nahrávky
+      const y0 = Math.round(r * plotHpx / st.rows), y1 = Math.round((r + 1) * plotHpx / st.rows);
+      for (let y = y0; y < y1; y++) {
+        const rowOff = y * devW;
+        for (let x = x0; x < x1; x++) st.img[rowOff + x] = v;
+      }
+    }
+  };
+
+  const full = st.filled === st.cols;
+  const shift = st.total - st.lastDrawnTotal;
+  if (!st.repaintAll && st.lastDrawnFull && full && shift === 1) {
+    /* Posun okna: zahoď nejstarší sloupec vlevo, nakresli nejnovější vpravo.
+     *
+     * POZOR Posun se dělá o šířku PRÁVĚ ZAHOZENÉHO (levého) sloupce, ne o tu na
+     * konci: při rozvržení Bresenhamem mají různé sloupce šířku o pixel jinou
+     * (naměřeno: 1 nebo 2 px při 646 px na 500 sloupců). Když se vezme špatná,
+     * obraz se časem rozjede — naměřeno jako postupné uhýbání doprava. */
+    const drop = posOf(1) - posOf(0);
+    const copyPx = plotWpx - drop;
+    for (let y = 0; y < plotHpx; y++) {
+      const rowOff = y * devW;
+      st.img.copyWithin(rowOff, rowOff + drop, rowOff + drop + copyPx);
+    }
+    /* Nový sloupec je v kruhovém zásobníku ten, který se právě přepsal, tedy
+     * `head − 1`. Jeho šířka se bere z TÉŽE absolutní pozice jako při plné
+     * kresbě (`posOf(cols−1)`), jinak by se zaokrouhlení rozešlo s rozvržením. */
+    const k = st.cols - 1;
+    writeColumn((st.head - 1 + st.cols) % st.cols, posOf(k), plotWpx);
+  } else {
+    // plná kresba: nejstarší sloupec vlevo, nejnovější vpravo
+    for (let i = 0; i < st.filled; i++) {
+      const idx = colIndex(st, i);
+      writeColumn(idx, posOf(i), i === st.filled - 1 ? plotWpx : posOf(i + 1));
+    }
+    st.repaintAll = false;
+  }
+  st.lastDrawnTotal = st.total;
+  st.lastDrawnFull = full;
+
+  // buffer → pomocné plátno → plátno (jediné překreslení, se transformací)
+  const data = new ImageData(new Uint8ClampedArray(st.img.buffer), devW, devH);
+  if (st.off.width !== devW || st.off.height !== devH) { st.off.width = devW; st.off.height = devH; }
+  st.offCtx.putImageData(data, 0, 0);
+  ctx.drawImage(st.off, padL, padT, plotWpx / dpr, plotH);
+
+  // mřížka a popisky — stejné kmitočty jako u nahrávky
+  const yFor = (hz) => padT + plotH - (hz / 6000) * plotH;
+  ctx.font = '500 10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+  ctx.fillStyle = COLORS.mute;
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'right';
+  for (const hz of [0, 1000, 2000, 3000, 4000, 5000, 6000]) {
+    ctx.fillText(hz >= 1000 ? `${hz / 1000} kHz` : '0', padL - 4, yFor(hz));
+  }
+  ctx.textAlign = 'left';
+  ctx.fillText('Hz', 4, padT);
+
+  // pásmo zpěváckého formantu — stejné jako u nahrávky (čárkované)
+  ctx.strokeStyle = 'rgba(120,190,190,.45)';
+  ctx.setLineDash([4, 3]);
+  for (const hz of [2500, 3200]) {
+    const yy = Math.round(yFor(hz)) + 0.5;
+    ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(padL + plotW, yy); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // popisek doby — okno drží ~10 s
+  ctx.fillStyle = COLORS.mute;
+  ctx.textBaseline = 'bottom';
+  ctx.textAlign = 'right';
+  ctx.fillText('posledních ~10 s', padL + plotW, padT + plotH + 14);
+
+  /* Dokud se obraz nezahřeje, je normalizace pevná a hodnota se může rozejít
+   * s tím, co uvidí report. Přiznat to — stejná zásada jako u ostatních hlášek:
+   * neslibovat přesnost, kterou metrika v tu chvíli nemá. */
+  if (warm) {
+    ctx.textAlign = 'left';
+    ctx.fillStyle = COLORS.warn;
+    ctx.fillText('měřítko se ustaluje', padL + 4, padT + 12);
+  }
+
+  if (!st.filled) {
+    ctx.fillStyle = COLORS.mute;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '500 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    ctx.fillText('sbírá se…', padL + plotW / 2, padT + plotH / 2);
   }
 }
