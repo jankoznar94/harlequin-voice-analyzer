@@ -14,11 +14,13 @@
  *     BEZ podmínky, záchrana se změní v trvalý stav a tlačítko ztratí smysl —
  *     test to musí shodit.
  *
- *  2. **Navigace se bere SÍTÍ, ostatní assety z cache.** Dokud byl
- *     `index.html` cache-first, načetla se pořád stará stránka a na zařízení
- *     se nikdy nic nezměnilo. Ale moduly ze sítě bez ohledu na cache by
- *     spárovaly nový `index.html` se starým `app.js` (nesouhlasí `?v=`)
- *     a aplikace by spadla — proto musí zůstat cache-first.
+ *  2. **VŠECHNO ze cache (i navigace).** Když se `index.html` bral ze sítě
+ *     a moduly z cache, spárovala se po nasazení NOVÁ stránka se STARÝMI
+ *     moduly — živý spektrogram zůstal prázdné okno, protože staré
+ *     `live-ui.js` o jeho plátně nevědělo. Naměřeno (`test-sw-mix.mjs`).
+ *     Navíc se hledá s `ignoreSearch`, protože `index.html` žádá soubory
+ *     s `?v=`, kdežto `ASSETS` je ukládá bez query — bez toho se v cache
+ *     netrefily a chodily vždy ze sítě.
  *
  *  3. **Offline nesmí vrátit chybu.** Když je zařízení bez sítě, navigace
  *     musí dát ULOŽENOU stránku.
@@ -59,13 +61,23 @@ function runSW(o = {}) {
   const cache = {
     async addAll(urls) { for (const u of urls) if (!store.has(abs(u))) store.set(abs(u), mkRes(u, 'precached')); },
     async put(req, res) { puts++; store.set(keyOf(req), res); },
-    async match(req) { return store.get(keyOf(req)) || undefined; },
+    async match(req, opts) { return store.get(matchKey(req, opts)) || undefined; },
   };
   const caches = {
     async open() { return cache; },
-    async match(req) { return store.get(keyOf(req)) || undefined; },
+    async match(req, opts) { return store.get(matchKey(req, opts)) || undefined; },
     async keys() { return [...cacheNames]; },
     async delete(n) { cacheNames.delete(n); return true; },
+  };
+  /**
+   * Klíč hledání v cache. `ignoreSearch` odpovídá prohlížeči: s ním se query
+   * (`?v=38`) při hledání ZAHLADÍ — proto se `src/app.js?v=38` najde jako
+   * uložené `./src/app.js`. Bez toho mock chování nevěrně napodobuje a test
+   * by tvrdil, že se soubor v cache netrefí, i když se v prohlížeči trefí.
+   */
+  const matchKey = (req, opts) => {
+    const k = keyOf(req);
+    return opts && opts.ignoreSearch ? k.split('?')[0] : k;
   };
   const fetchCalls = [];
   const fetchMock = async (req) => {
@@ -142,17 +154,18 @@ console.log('\n═══ Service worker: záchrana ze slepé uličky ═══\n
     'musí být `RESCUE ? … skipWaiting()` — ne volání napřímo');
 }
 
-console.log('\n═══ Service worker: navigace ze sítě, assety z cache ═══\n');
+console.log('\n═══ Service worker: VŠECHNO z cache, aby se verze nemíchaly ═══\n');
 
 {
-  // (a) nová stránka ze sítě se ULOŽÍ do cache (jinak by offline vracelo starou)
+  /* ⚠️ Reálná vada, kterou to hlídá: dokud se `index.html` bral ze SÍTĚ
+   * a moduly z cache, potkala se po nasazení NOVÁ stránka se STARÝMI moduly.
+   * Živý spektrogram pak zůstal prázdné okno — staré `live-ui.js` o plátně
+   * `c-live-spec` nevědělo. Naměřeno v `test-sw-mix.mjs` (0 nakreslených
+   * pixelů, tón i úroveň přitom šly). Cache-first drží stav KONZISTENTNÍ. */
   const sw = runSW({ cached: { './index.html': { status: 200, body: 'STARA-STRANKA' } } });
   const res = await sw.fire('fetch', { request: sw.req('./index.html', 'navigate') });
-  check('navigace se bere ze sítě (ne ze staré cache)',
-    res.body === 'network:' + abs('./index.html'), String(res.body));
-  check('odpověď ze sítě se ULOŽÍ do cache (ne stará)',
-    sw.get('./index.html').body.startsWith('network:'),
-    String(sw.get('./index.html').body).slice(0, 40));
+  check('navigace se bere z cache (ne ze sítě) — verze zůstanou konzistentní',
+    res.body === 'STARA-STRANKA' && sw.fetchCalls.length === 0, String(res.body));
 }
 {
   // (b) offline: musí vrátit ULOŽENOU stránku, ne chybu
@@ -183,6 +196,24 @@ console.log('\n═══ Service worker: navigace ze sítě, assety z cache ═�
   const res = await sw.fire('fetch', { request: sw.req('./src/app.js') });
   check('starý modul v cache se NEpřepíše novým ze sítě (parita ?v=)',
     res.body === 'STARY-APP' && sw.fetchCalls.length === 0, String(res.body));
+}
+{
+  /* (f) ⚠️ `index.html` žádá `src/app.js?v=38`, ale `ASSETS` ukládá tentýž
+   * soubor BEZ query. Bez `ignoreSearch` se takový požadavek v cache netrefí
+   * a soubor chodí vždy ze sítě — tedy přesně ta nekonzistence, kvůli které
+   * vznikl celý tenhle problém. Naměřeno v prohlížeči: `app.js?v=37` se
+   * v cache netrefil. */
+  const sw = runSW({ cached: { './src/app.js': { status: 200, body: 'APP-Z-CACHE' } } });
+  const res = await sw.fire('fetch', { request: sw.req('./src/app.js?v=38') });
+  check('soubor s ?v= se najde v cache i bez query v klíči (ignoreSearch)',
+    res.body === 'APP-Z-CACHE' && sw.fetchCalls.length === 0, String(res.body));
+}
+{
+  // (g) a totéž pro stránku — na tu se taky může přilepit query
+  const sw = runSW({ cached: { './index.html': { status: 200, body: 'STRANKA-Z-CACHE' } } });
+  const res = await sw.fire('fetch', { request: sw.req('./index.html?x=1', 'navigate') });
+  check('stránka s query se najde v cache (ignoreSearch)',
+    res.body === 'STRANKA-Z-CACHE' && sw.fetchCalls.length === 0, String(res.body));
 }
 
 console.log('\n═══ Service worker: úklid a ruční aktualizace ═══\n');

@@ -31,7 +31,14 @@ const ok = (label, cond, detail = '') => {
   else console.log(`  ✓ ${label}${detail ? ' — ' + detail : ''}`);
 };
 
-/* ── `pushBlock` ze SKUTEČNÉHO live-run.js (není exportovaný) ────────────── */
+/* ── `pushBlock` ze SKUTEČNÉHO live-run.js (není exportovaný) ──────────────
+ *
+ * POZOR: `pushBlock` sahá i na konstanty spektrogramu (`SPEC_BUF_SAMPLES`,
+ * `SPEC_NFFT`) — když se sem nepředají, spadne to na `ReferenceError`
+ * a test hlásí chybu kódu, která vznikla v testu. Přesně to se stalo při
+ * zavedení živého spektrogramu: test padal od v37, protože seznamy
+ * závislostí se musí hlídat spolu s kódem.
+ */
 const src = fs.readFileSync(path.join(ROOT, 'src/live-run.js'), 'utf8');
 const grab = (name) => {
   const i = src.indexOf(`function ${name}(`);
@@ -43,9 +50,13 @@ const grab = (name) => {
   }
   throw new Error('nevyvážené závorky');
 };
+const { SPEC_BUF_SAMPLES, SPEC_NFFT, createSpecState, feedSpec } =
+  await import('../src/live-spec.js');
 const factory = new Function('feedFrame', 'onFrame', 'SPR_NFFT', 'FRAME_SIZE', 'BLOCK_MS',
+  'SPEC_BUF_SAMPLES', 'SPEC_NFFT', 'createSpecState', 'feedSpec',
   grab('pushBlock') + '\n' + grab('appendKeep') + '\nreturn { pushBlock };');
-const { pushBlock } = factory(feedFrame, () => {}, 4096, FRAME_SIZE, BLOCK_MS);
+const { pushBlock } = factory(feedFrame, () => {}, 4096, FRAME_SIZE, BLOCK_MS,
+  SPEC_BUF_SAMPLES, SPEC_NFFT, createSpecState, feedSpec);
 
 /* ── syntetický hlas se ZNÁMOU délkou traktu ─────────────────────────────── */
 const PRAVDA_F = [500, 1500, 2500];
@@ -74,7 +85,19 @@ function ton(f0, sek, vib = 0) {
 async function zive(samples, { backend } = {}) {
   const dsp = await createDsp({ frameSize: FRAME_SIZE, sampleRate: SR, fach: 'tenor', force: backend });
   const state = createLiveState(SR, FRAME_SIZE);
-  const r = { state, backend: dsp, pending: new Float64Array(0), sprBuf: new Float64Array(0) };
+  /* ⚠️ Musí tu být VŠE, na co `pushBlock` sahá — včetně zásobníku
+   * spektrogramu (`specBuf`) a stavu jeho sloupců (`specState`). Když se
+   * pole přidá do kódu a ne sem, test spadne na `undefined.length`
+   * a hlásí vadu, která vznikla v testu (stalo se při zavedení
+   * živého spektrogramu). */
+  const r = {
+    state, backend: dsp,
+    pending: new Float64Array(0),
+    sprBuf: new Float64Array(0),
+    specBuf: new Float64Array(0),
+    specState: null,
+    specRows: 192,
+  };
   for (let i = 0; i + BLOCK <= samples.length; i += BLOCK) {
     pushBlock(r, samples.subarray(i, i + BLOCK));
   }

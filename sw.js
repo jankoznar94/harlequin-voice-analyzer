@@ -2,14 +2,14 @@
  * Service worker — offline provoz.
  * Verze cache zvyš při změně souborů, jinak se drží stará.
  */
-const CACHE = 'vocal-lab-v37';
+const CACHE = 'vocal-lab-v38';
 
 /**
  * Verze nasazeného buildu. Zvyšovat spolu s CACHE výše a s ?v= v index.html.
  * Vypisuje se v patičce aplikace, aby uživatel poznal, že aktualizace proběhla —
  * bez toho po kliknutí na tlačítko nemá jak zjistit, jestli se něco stalo.
  */
-const APP_VERSION = '1.0.37';
+const APP_VERSION = '1.0.38';
 const ASSETS = [
   './',
   './index.html',
@@ -100,44 +100,42 @@ self.addEventListener('activate', (e) => {
 });
 
 /**
- * Navigace (otevření aplikace) se bere ze SÍTĚ, ostatní soubory z cache.
+ * ⚠️ VŠECHNO SE BERE Z CACHE (i navigace) A HLEDÁ SE I BEZ `?v=`.
  *
- * PROČ: dokud byl i `index.html` cache-first, drželo zařízení navždy starou
- * stránku — nový worker sice mohl převzít kontrolu, ale stránka se načetla
- * ze staré cache, takže se v ní nic nezměnilo.
+ * Tady vznikala reálná vada: `index.html` se bral ze SÍTĚ, ale moduly
+ * (`src/live-ui.js` atd.) cache-first. Po nasazení se tak na zařízení potkala
+ * NOVÁ stránka se STARÝMI moduly a živý spektrogram zůstal prázdné okno:
+ * staré `live-ui.js` o plátně `c-live-spec` vůbec nevědělo. Naměřeno
+ * (`test/test-sw-mix.mjs`): stránka si vyžádala `app.js?v=37` (79770 B, nový),
+ * ale dostala `live-ui.js` 7181 B a `live-charts.js` 16336 B — přesně
+ * velikosti z předchozí verze, zatímco nové mají 8153 a 29994. Plátno mělo
+ * 0 nakreslených pixelů, a přitom tón i úroveň šly normálně. Bez chyby
+ * v konzoli.
  *
- * ⚠️ Do cache se ukládá AŽ odpověď ze sítě, ne starý záznam předem — jinak by
- * se nový `index.html` nikdy neuložil a příští otevření offline by vrátilo
- * starou stránku.
+ * Druhá polovina téže vady: `index.html` žádá `src/app.js?v=37`, ale `ASSETS`
+ * ukládá `./src/app.js` BEZ query — takže se takový požadavek v cache nikdy
+ * netrefil a `app.js` i `style.css` chodily vždy ze sítě. Proto se hledá
+ * s `ignoreSearch: true`: jeden požadavek = jedna verze souboru z JEDNÉ cache,
+ * ať je v adrese query jakákoli. Nemusí se proto hlídat, že `?v=` sedí
+ * s klíčem v `ASSETS` — na tuhle past se nedá zapomenout.
  *
- * ⚠️ Jen navigace. Kdyby se i moduly (`app.js`, `charts.js`, `sw.js`) braly
- * ze sítě bez ohledu na cache, mohl by se nový `index.html` spárovat se
- * starým `app.js` (nesouhlasí `?v=`) a aplikace by spadla. Assety proto
- * zůstávají cache-first a vymění se společně s navigací při dalším načtení.
+ * Cache-first drží stav KONZISTENTNÍ: buď je všechno staré, nebo všechno nové.
+ * Novou verzi dostane uživatel tlačítkem aktualizace v hlavičce (pošle
+ * `SKIP_WAITING`, nový worker se aktivuje a stránka se znovu načte z nové
+ * cache) — to je zavedená a otestovaná cesta (`test-sw-update.mjs`).
  *
- * ⚠️ Když je zařízení offline, musí se vrátit ULOŽENÁ stránka — ne chyba.
- * O to se stará `catch` níž.
+ * Dřívější důvod pro navigaci ze sítě („doručit nový index.html sám") už
+ * pominul: jednorázová záchrana mířila na zařízení s cache STARŠÍ než v6,
+ * která tlačítko vůbec neměla. Taková zařízení jsou dávno pryč a `RESCUE_UNTIL`
+ * navíc sám vyprší. Konzistence verzí je důležitější.
+ *
+ * Offline režim tím zůstává: `caches.match` vrátí uloženou stránku.
  */
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
 
-  // Navigace: nejdřív síť, při výpadku uložená stránka (offline režim).
-  if (e.request.mode === 'navigate') {
-    e.respondWith(
-      fetch(e.request).then((res) => {
-        if (res && res.status === 200 && new URL(e.request.url).origin === location.origin) {
-          const copy = res.clone();
-          caches.open(CACHE).then(c => c.put(e.request, copy));
-        }
-        return res;
-      }).catch(() => caches.match(e.request).then(hit => hit || caches.match('./index.html')))
-    );
-    return;
-  }
-
-  // Ostatní: cache-first (offline režim stojí na tom, že assety jsou v cache).
   e.respondWith(
-    caches.match(e.request).then(hit => {
+    caches.match(e.request, { ignoreSearch: true }).then(hit => {
       if (hit) return hit;
       return fetch(e.request).then(res => {
         // necachovat cross-origin
@@ -147,7 +145,7 @@ self.addEventListener('fetch', (e) => {
         const copy = res.clone();
         caches.open(CACHE).then(c => c.put(e.request, copy));
         return res;
-      }).catch(() => caches.match('./index.html'));
+      }).catch(() => caches.match('./index.html', { ignoreSearch: true }));
     })
   );
 });
