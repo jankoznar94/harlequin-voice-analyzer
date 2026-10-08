@@ -142,9 +142,32 @@ export function sprGeom(w, h, notes, summary, offX = 0, duration = 0) {
     const v = ser.map(p => p[1]).sort((a, b) => a - b);
     extra.push(v[Math.floor(v.length * 0.02)], v[Math.min(v.length - 1, Math.floor(v.length * 0.98))]);
   }
-  const thr = Number.isFinite(summary?.ring_threshold) ? summary.ring_threshold : Math.min(...vals);
-  let lo = Math.min(...vals, thr, ...extra), hi = Math.max(...vals, ...extra);
-  const pad = Math.max(2, (hi - lo) * 0.12);
+  /* ⚠️ PRÁH VÝPADKU PATŘÍ DO OSY VŽDY — i když leží hluboko pod daty.
+   *
+   * Reálná vada, kterou uživatel viděl (nahrávka 6,2 s, 5 tónů): práh vyšel
+   * −60,96 dB, kdežto tóny ležely mezi −42,7 a −21,7 dB. Osa se počítala jen
+   * z DAT, takže sahala do −65,7 dB — a graf kvůli tomu ukazoval rozsah
+   * 48,7 dB místo 20,9. Sloupce pak vedly od −65,7 dB (tedy odspodu) a měřily
+   * 86–164 px z 182 px plochy, takže z grafu zmizel tvar křivky: každý tón
+   * vypadal jako plný sloupec. Červená čára „hranice ringu“ sjela na úplné
+   * dno, kde se plete s okrajem grafu.
+   *
+   * Práh pod daty nevzniká jen tak: je to `medián − k·MAD` a MAD je při málo
+   * tónech (5) skoro nulová, takže se odečte plná podlaha 3 dB × 2,5… ve
+   * výsledku −61 dB. Když práh leží POD daty, není to vada prahu — prostě
+   * žádný tón není výpadek, takže se do rozsahu nesmí pouštět: graf se má
+   * vejít na to, co ukazuje. Práh se proto připojí jen tehdy, když leží
+   * uvnitř dat (a rozšíří osu o pár dB, aby byla čára vidět). */
+  const thr = Number.isFinite(summary?.ring_threshold) ? summary.ring_threshold : null;
+  const dataLo = Math.min(...vals, ...extra), dataHi = Math.max(...vals, ...extra);
+  /* Podlaha: rozpětí aspoň 8 dB, ať z pěti stejných tónů není nekonečně
+   * zvětšená čára. */
+  const span0 = Math.max(8, dataHi - dataLo);
+  const dataMid = (dataHi + dataLo) / 2;
+  let lo = dataMid - span0 / 2, hi = dataMid + span0 / 2;
+  const thrIn = thr !== null && thr >= lo - 2 && thr <= hi + 2;
+  if (thrIn) { lo = Math.min(lo, thr - 1.5); hi = Math.max(hi, thr + 1.5); }
+  const pad = Math.max(2, (hi - lo) * 0.08);
   lo -= pad; hi += pad;
   /* Konec osy: délka nahrávky, když ji známe — jinak konec posledního tónu.
    * Nikdy ale méně, než kam sahají data: tóny se nesmí ocitnout mimo osu. */
@@ -393,18 +416,35 @@ export function drawSpr(canvas, notes, summary, playheadT = null, opts = {}) {
       continue;
     }
 
+    /* Tón bez časové řady (kratší než 0,30 s) se kreslí PLOCHOU ČÁRKOU ve své
+     * hodnotě, ne plným sloupcem odspodu.
+     *
+     * PROČ SE TO ZMĚNILO: krátkých tónů bývá hodně (na nahrávce 6,2 s tři
+     * z pěti) a v měřítku, které musí pojmout i dlouhé tóny, vyjde sloupec
+     * odspodu skoro přes celou plochu — tvar křivky se ztratí a každý tón
+     * vypadá jako plný sloupec. Přitom jde o TOTÉŽ měření jako u křivky, jen
+     * z jednoho okna. Plná čárka drží stejnou vizuální řeč (výška = SPR)
+     * a sloupec odspodu už nikde nefiguruje. */
     const bw = Math.max(2, Math.min(18, xb - xa));
     const yy = y(n.spr);
     ctx.fillStyle = color;
-    ctx.fillRect(xa + (xb - xa - bw) / 2, Math.min(yy, bottom), bw, Math.abs(bottom - yy));
+    ctx.fillRect(xa + (xb - xa - bw) / 2, yy, bw, 3);
+    /* Svislá stopa dolů jen slabě — ať je vidět, kam tón časově patří, ale
+     * nepřebije křivky svou plochou. */
+    ctx.globalAlpha = 0.22;
+    ctx.fillRect(xa + (xb - xa - bw) / 2, yy + 3, bw, Math.max(0, bottom - yy - 3));
+    ctx.globalAlpha = 1;
   }
   ctx.restore();
 
-  // referenční čáry + popisky
+  /* Referenční čáry. `ring_threshold` se vypisuje, jen když leží v ose —
+   * když je hluboko pod daty (u málo tónů vychází `medián − k·MAD` i −61 dB),
+   * čára na dně se plete s okrajem grafu a nic neříká. */
   const refLines = [
     [-13.1, COL.ref, 'profesionálové'],
     [-22.7, COL.ref, 'nezpěváci'],
-    [summary.ring_threshold, COL.bad, 'hranice ringu'],
+    ...(lo <= summary.ring_threshold && summary.ring_threshold <= hi
+      ? [[summary.ring_threshold, COL.bad, 'hranice ringu']] : []),
   ];
   ctx.setLineDash([4, 3]);
   for (const [v, c, label] of refLines) {
