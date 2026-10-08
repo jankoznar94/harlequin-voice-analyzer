@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="cs"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>kontrola: práh hluboko pod daty nesmí roztáhnout osu</title>
+<style>
+  body { background:#1a1715; color:#e8e2dc; font:13px sans-serif; margin:0; }
+  main { max-width: 760px; margin: 0 auto; padding: 12px; }
+  h2 { font-weight:600; font-size:15px; margin:18px 0 4px; }
+  .chart { width:100%; display:block; background:#231f1c; border:1px solid #3a3330; border-radius:6px; }
+  .chart-wrap { position:relative; margin:8px 0 4px; }
+  pre { white-space:pre-wrap; background:#231f1c; border:1px solid #3a3330; padding:8px; }
+</style></head>
+<body><main>
+  <h2>Případ z reálné nahrávky: práh −60,96 dB, tóny −42,7 … −21,7 dB</h2>
+  <p>Tři tóny z pěti mají 0,26–0,27 s, takže nemají časovou řadu. Dřív se
+     kreslily plným sloupcem odspodu — a protože osa sahala až k prahu
+     (−65,7 dB), měřily 86–164 px z 182 px plochy. Teď je z nich plochá čárka
+     ve vlastní hodnotě a osa se počítá z DAT.</p>
+  <div class="chart-wrap">
+    <canvas id="c-spr" class="chart" height="230"></canvas>
+  </div>
+  <pre id="out">…</pre>
+<script type="module">
+import { drawSpr, sprGeom } from '../src/charts.js';
+
+/* Data 1:1 z „analýza (3).json" (nahrávka 6,16 s, 5 tónů). */
+const NOTES = [
+  { idx: 1, t_start: 1.3513333333333333, t_end: 2.191333333333333, dur: 0.84,
+    note: 'F#4', f0: 373.7, spr: -39.70557083151847, spr_stare: -44.91809384572635,
+    ring_ok: true, ring_dropout: false,
+    spr_series: [[0,-31.209],[0.05,-32.171],[0.1,-31.682],[0.15,-34.738],[0.2,-37.982],
+                 [0.25,-38.085],[0.3,-44.002],[0.35,-39.001],[0.4,-39.586],[0.45,-39.396],
+                 [0.5,-40.24],[0.55,-40.667],[0.6,-40.598]] },
+  { idx: 2, t_start: 2.2013333333333334, t_end: 2.4713333333333334, dur: 0.27,
+    note: 'G#4', f0: 410.1, spr: -42.667302192006325, spr_stare: -47.17392775301872,
+    ring_ok: true, ring_dropout: false },
+  { idx: 3, t_start: 4.001333333333333, t_end: 4.261333333333333, dur: 0.26,
+    note: 'G#3', f0: 209.9, spr: -21.655813342961867, spr_stare: -25.111536131652645,
+    ring_ok: true, ring_dropout: false },
+  { idx: 4, t_start: 4.311333333333334, t_end: 4.5713333333333335, dur: 0.26,
+    note: 'F3', f0: 174.0, spr: -27.130115858091315, spr_stare: -30.110898775240265,
+    ring_ok: true, ring_dropout: false },
+  { idx: 5, t_start: 5.641333333333334, t_end: 6.061333333333334, dur: 0.42,
+    note: 'F#4', f0: 374.5, spr: -31.852178410889344, spr_stare: -33.22571250751777,
+    ring_ok: true, ring_dropout: false,
+    spr_series: [[0,-30.13],[0.05,-29.991],[0.1,-30.746],[0.15,-33.369],[0.2,-33.29]] },
+];
+const SUMMARY = { ring_threshold: -60.960777417951206, spr_median: -31.852178410889344 };
+const DUR = 6.16;
+
+const canvas = document.getElementById('c-spr');
+canvas.style.width = '100%';
+function draw() {
+  const w = canvas.clientWidth || 720;
+  drawSpr(canvas, NOTES, SUMMARY, null, { width: w, duration: DUR });
+  const g = sprGeom(w, 230, NOTES, SUMMARY, 0, DUR);
+  const bottom = g.y(g.lo);
+  const lines = [
+    `osa Y: ${g.lo.toFixed(2)} … ${g.hi.toFixed(2)} dB  (rozsah ${(g.hi - g.lo).toFixed(1)} dB)`,
+    `práh ${SUMMARY.ring_threshold.toFixed(2)} dB leží ${g.lo <= SUMMARY.ring_threshold ? 'V ose' : 'POD osou → čára se nekreslí'}`,
+    `plocha grafu: ${g.plotH} px`,
+  ];
+  for (const n of NOTES) {
+    const hasSer = n.spr_series && n.spr_series.length >= 2;
+    const h = Math.abs(bottom - g.y(n.spr));
+    lines.push(`  ${n.note.padEnd(4)} ${n.dur.toFixed(2)} s  SPR ${n.spr.toFixed(1).padStart(6)} dB  ` +
+      `${hasSer ? 'křivka' : 'plochá čárka'}  výška ${h.toFixed(0).padStart(3)} px (${(100 * h / g.plotH).toFixed(0)} %)`);
+  }
+  document.getElementById('out').textContent = lines.join('\n');
+}
+
+draw();
+addEventListener('resize', draw);
+</script>
+</main></body></html>

@@ -263,12 +263,15 @@ console.log('\n═══ Barvy sloupců: výpadek ≠ vyřazený tón ═══\
   const gr = drawSpr(canvas, mix, SUMMARY);
   check('drawSpr s mixem tónů vrátí geometrii', !!gr);
 
-  // Sloupce se poznají podle šířky ≤ 18 px; hledáme barvu na nich.
-  const bars = (ops.fillsStyle || []).filter(f => f.w <= 18 && f.h > 0);
+  /* Tón se kreslí jako PLOCHÁ ČÁRKA ve své hodnotě (h ≤ 4 px) — plný sloupec
+   * odspodu se od 1.0.40 nepoužívá. Barva se čte z těch čárek; slabá svislá
+   * stopa pod nimi je táž barva jen s průhledností, takže by se do počtu
+   * pletla dvakrát. */
+  const bars = (ops.fillsStyle || []).filter(f => f.w <= 18 && f.h > 0 && f.h <= 4);
   const reds = bars.filter(f => f.style === '#b5675e');
   const greys = bars.filter(f => f.style === '#6f6862');
   check('červeně je jen SKUTEČNÝ výpadek (1 ze 3 tónů)', reds.length === 1,
-    `${reds.length} červených z ${bars.length} sloupců`);
+    `${reds.length} červených z ${bars.length} tónů`);
   check('vyřazený tón (SPR −9,7 dB) je neutrální šedý, ne červený', greys.length === 1,
     `šedých: ${greys.length} — barvy: ${bars.map(f => f.style).join(' ')}`);
 }
@@ -277,7 +280,7 @@ console.log('\n═══ Barvy sloupců: výpadek ≠ vyřazený tón ═══\
   const jenVypadek = [{ t_start: 0, t_end: 1, spr: -24.0, ring_ok: false, ring_dropout: true }];
   const { canvas, ops } = mockCanvas(W, H);
   drawSpr(canvas, jenVypadek, SUMMARY);
-  const bars = (ops.fillsStyle || []).filter(f => f.w <= 18 && f.h > 0);
+  const bars = (ops.fillsStyle || []).filter(f => f.w <= 18 && f.h > 0 && f.h <= 4);
   check('skutečný výpadek ringu se pořád kreslí červeně',
     bars.some(f => f.style === '#b5675e'), bars.map(f => f.style).join(' '));
 }

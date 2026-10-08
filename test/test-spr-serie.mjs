@@ -171,10 +171,62 @@ console.log('\n═══ 5. Kresba: dlouhý tón s řadou = KŘIVKA, ne sloupec 
   drawSpr(canvas, mk(null), summary);
   check('tón bez řady → kreslí se sloupec (fillRect)', fills.includes('R') && !fills.includes('F'), fills.join(''));
 
-  /* Osa musí pojmout krajní body řady, jinak se křivka ořízne o okraj. */
+  /* Osa musí pojmout krajní bod řady, jinak se křivka ořízne o okraj. */
   const wide = Array.from({ length: 20 }, (_, i) => [i * 0.25, i === 10 ? -34 : -14]);
   const g2 = sprGeom(600, 230, mk(wide), summary);
   check('osa pojme krajní bod řady', g2.lo < -34, `lo=${g2.lo.toFixed(1)} dB`);
+}
+
+console.log('\n═══ 5b. Práh hluboko pod daty NESMÍ roztáhnout osu ═══');
+{
+  /* REÁLNÁ VADA, kterou uživatel viděl (nahrávka 6,2 s, 5 tónů): práh výpadku
+   * vyšel −60,96 dB, tóny ležely mezi −42,7 a −21,7 dB. Osa se počítala
+   * z dat VČETNĚ prahu, takže sahala do −65,7 dB — a graf kvůli tomu ukazoval
+   * rozsah 48,7 dB místo 26. Krátké tóny pak vedly odspodu a měřily 86–164 px
+   * z 182 px plochy, takže každý tón vypadal jako plný sloupec místo křivky.
+   *
+   * Práh pod daty vzniká u málo tónů: `medián − k·MAD` s MAD ≈ 0 odečte plnou
+   * podlahu 3 dB × 2,5… = −61 dB. Žádný tón pak není výpadek, takže práh do
+   * rozsahu nepatří. */
+  const low = [{ idx: 1, t_start: 1, t_end: 2, dur: 1, note: 'X', f0: 200,
+    spr: -39.7, spr_stare: -44.9, ring_ok: true, ring_dropout: false }];
+  const sum2 = { ring_threshold: -60.96 };
+  const g3 = sprGeom(600, 230, low, sum2);
+  check('práh hluboko pod daty osu neroztáhne', g3.lo > -50,
+    `lo=${g3.lo.toFixed(1)} dB (data −39,7; práh −60,96)`);
+  check('rozsah osy zůstane použitelný (do 30 dB)', g3.hi - g3.lo < 30,
+    `${(g3.hi - g3.lo).toFixed(1)} dB`);
+
+  // naopak: práh UVNITŘ dat se do osy dostat MUSÍ — kvůli němu graf existuje
+  const mid = [
+    { idx: 1, t_start: 1, t_end: 2, dur: 1, note: 'X', f0: 200, spr: -14, spr_stare: -18, ring_ok: true, ring_dropout: false },
+    { idx: 2, t_start: 3, t_end: 4, dur: 1, note: 'Y', f0: 200, spr: -24, spr_stare: -28, ring_ok: false, ring_dropout: true },
+  ];
+  const g4 = sprGeom(600, 230, mid, { ring_threshold: -22 });
+  check('práh uvnitř dat osu pojmout MUSÍ', g4.lo <= -22 && g4.hi >= -22,
+    `${g4.lo.toFixed(1)}…${g4.hi.toFixed(1)} dB, práh −22`);
+
+  /* Krátký tón bez řady = PLOCHÁ ČÁRKA ve své hodnotě, ne sloupec odspodu.
+   * Kdyby se vrátil sloupec, změří se výška přes celou plochu. */
+  const rects = [];
+  const ctx2 = {
+    setTransform() {}, fillText() {}, save() {}, restore() {}, setLineDash() {},
+    beginPath() {}, closePath() {}, clip() {}, rect() {}, moveTo() {}, lineTo() {},
+    stroke() {}, fill() {}, globalAlpha: 1,
+    fillRect(x, y, w2, h2) { rects.push({ x, y, w: w2, h: h2 }); },
+  };
+  const cv2 = { clientWidth: 600, clientHeight: 230, style: {}, getContext: () => ctx2 };
+  const short = [{ idx: 1, t_start: 1, t_end: 1.26, dur: 0.26, note: 'G#3', f0: 210,
+    spr: -21.7, spr_stare: -25.1, ring_ok: true, ring_dropout: false }];
+  rects.length = 0;
+  drawSpr(cv2, short, { ring_threshold: -60.96 });
+  const mark = rects.filter(r => r.h <= 4 && r.h >= 2);
+  check('krátký tón → plochá čárka ve své hodnotě', mark.length >= 1,
+    `${mark.length} čárek, výšky: ${rects.map(r => r.h.toFixed(0)).join(', ')} px`);
+  /* Měří se jen ÚZKÉ obdélníky (značky tónů); široké jsou pásma pozadí. */
+  const narrow = rects.filter(r => r.w < 100);
+  check('krátký tón → žádný sloupec přes celou plochu', narrow.every(r => r.h < 100),
+    `nejvyšší značka ${Math.max(...narrow.map(r => r.h)).toFixed(0)} px z 182 px plochy`);
 }
 
 console.log('\n═══ 6. Průběh ringu (ringTrend) a hlášení ═══');
