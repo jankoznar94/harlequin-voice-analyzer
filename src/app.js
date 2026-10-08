@@ -693,6 +693,23 @@ function verdict(res) {
     parts.push(`Vrátit se na ${s.dropouts.length} ${czPlural(s.dropouts.length, 'místo', 'místa', 'míst')} — najdeš ${czPlural(s.dropouts.length, 'ho', 'je', 'je')} v grafu níž podle času.`);
   }
 
+  /* Kolik tónových úseků vypadlo kvůli OBORU — u nahrávky s doprovodem je to
+   * většina a bez téhle věty člověk vidí děravý graf a hledá vadu v sobě.
+   * Naměřeno na 130s nahrávce s varhanami: 63 tónových úseků, z toho 43 mimo
+   * tenor (A#2 24×, F2 9×, …), zbylo 20 značek.
+   *
+   * Věta se hlásí jen když je to PODSTATNÁ část — u jedné dvou not by jen
+   * znepokojovala. A vždycky se přizná, že jde o odhad: appka neumí rozeznat
+   * doprovod od hlasu, jen ví, že tóny ležely mimo zvolený obor. */
+  const nOut = s.n_dropped_out_of_range || 0;
+  if (nOut >= 3 && nOut >= (res.n_dropped || 0) / 2) {
+    const noty = (s.dropped_out_of_range_notes || []).join(', ');
+    parts.push(`<strong>${nOut} ${czPlural(nOut, 'úsek', 'úseky', 'úseků')} vypadlo mimo obor</strong> ` +
+      `tenor${noty ? ' (' + escapeHtml(noty) + ')' : ''} — v grafu po nich zůstávají prázdná místa. ` +
+      'Bývá to doprovod (klavír, varhany) nebo tóny v nižší poloze, než jaký obor máš zvolený. ' +
+      'Přepni <strong>Rozsah nahrávky</strong>, pokud jsi zpíval níž.');
+  }
+
   /* Průběh ringu v čase — jiná otázka než „drží na každém tónu": tady jde
    * o to, jestli drží v PRŮBĚHU jednoho tónu. Tón může mít ring na začátku
    * a ztratit ho ke konci, a přitom vyjít jako „ring OK". */
@@ -1090,8 +1107,21 @@ function watchChartLayout() {
  */
 const sprScroll = { width: 0, offX: 0 };
 
+/**
+ * Volby kresby grafu ringu — rozměry, posuv, délka A DATA PODKLADU.
+ *
+ * `signalEnvelope` a `pitchSegments` se předávají do kresby, aby bylo v grafu
+ * vidět, kde nahrávka vůbec zní a kde v ní byla nalezena výška. Bez nich je
+ * každé místo bez tónu nerozeznatelné od ticha — naměřeno na nahrávce
+ * s varhanami: ani jedna sekunda ticha, a přesto graf vypadal děravý.
+ */
 function sprDrawOpts() {
-  return { width: sprScroll.width, offX: sprScroll.offX, duration: current?.result?.duration_s || 0 };
+  const r = current?.result;
+  return {
+    width: sprScroll.width, offX: sprScroll.offX, duration: r?.duration_s || 0,
+    signalEnvelope: r?.signal_envelope || null,
+    pitchSegments: r?.pitch_segments || null,
+  };
 }
 
 function layoutSpr() {

@@ -2072,8 +2072,67 @@ export function analyze(samples, sampleRate, opts = {}) {
     }
   }
 
+  /* ── Obrys signálu a „kde byla výška" ────────────────────────────────────
+   * PROČ: graf kreslí JEN tóny, které prošly segmentací a filtrem oboru. Každé
+   * jiné místo je v grafu díra — a člověk nemá jak poznat, jestli je to ticho,
+   * nebo signál, ze kterého se tón nepodařilo udělat. Naměřeno na reálné
+   * nahrávce s varhanami (130 s): ani jedna sekunda ticha, ale výška se našla
+   * jen ve 32,6 % rámců a z 63 tónových úseků jich 43 vypadlo jako „mimo tenor".
+   * Graf pak vypadal jako děravý, i když šlo o souvislou hudbu.
+   *
+   * Kreslí se proto dvě pomocné vrstvy:
+   *   signal_envelope — RMS po ~0,1 s oknech (v dBFS), kde nahrávka vůbec zní
+   *   pitch_segments  — úseky, kde detekce výšky něco našla (i mimo zvolený obor)
+   * Obě jsou jen pro KRESBU, do měření tónů nijak nevstupují. */
+  progress(0.94, 'Sestavuji obrys nahrávky…');
+  const envWin = Math.max(256, Math.round(0.1 * sampleRate));
+  const signalEnvelope = [];
+  for (let s = 0; s + envWin <= samples.length; s += envWin) {
+    let e = 0;
+    for (let i = s; i < s + envWin; i++) e += samples[i] * samples[i];
+    const rms = Math.sqrt(e / envWin);
+    signalEnvelope.push([round2(s / sampleRate), round2(20 * Math.log10(rms + 1e-12))]);
+  }
+  /* Úseky s nalezenou výškou: z `times`/`f0` se slijí souvislé rámce (mezera
+   * do 0,1 s se ještě bere jako tentýž úsek) a zapíše se i medián výšky —
+   * podle něj se pozná, jestli šlo o tón v oboru, nebo mimo něj. */
+  const pitchSegments = [];
+  {
+    const mez = 0.1;
+    let a = null, b = null, vals = [];
+    const uzavri = () => {
+      if (a === null) return;
+      vals.sort((x, y) => x - y);
+      pitchSegments.push({ t0: round2(a), t1: round2(b), f0: Math.round(vals[vals.length >> 1]) });
+      a = null; b = null; vals = [];
+    };
+    for (let i = 0; i < f0.length; i++) {
+      const t = times[i], v = f0[i];
+      if (v > 0) {
+        if (a === null) a = t;
+        else if (t - b > mez) { uzavri(); a = t; }
+        b = t; vals.push(v);
+      } else if (a !== null && t - b > mez) uzavri();
+    }
+    uzavri();
+  }
+
   progress(0.92, 'Vyhodnocuji ring…');
   const summary = ringAnalysis(notes);
+  /* Kolik tónových úseků vypadlo kvůli OBORU (ne kvůli tichu nebo neúspěšné
+   * detekci výšky).
+   *
+   * PROČ: u nahrávky s doprovodem (varhany, klavír) vypadne většina tónů jako
+   * „mimo obor" — naměřeno na 130s nahrávce: 63 tónových úseků, z toho 43 mimo
+   * tenor (A#2 24×, F2 9×, …), zbylo 20 značek. Graf pak vypadá děravý, aniž
+   * by člověk tušil proč. Počítá se tady (ne v `ringAnalysis`), protože ten
+   * `dropped` nevidí — a verdikt v UI dostává jen `summary`, takže se to musí
+   * doplnit sem. */
+  {
+    const mimo = dropped.filter(dd => / mimo /.test(dd.why || ''));
+    summary.n_dropped_out_of_range = mimo.length;
+    summary.dropped_out_of_range_notes = [...new Set(mimo.map(dd => String(dd.why).split(' ')[0]))].slice(0, 6);
+  }
   progress(1.0, 'Hotovo');
 
   // špička nahrávky — nutná k rozlišení „ticho" od „nemá pásmo".
@@ -2100,10 +2159,18 @@ export function analyze(samples, sampleRate, opts = {}) {
      * počítá z `notes`. Tenhle seznam je pro report a JSON. */
     dropped,
     peak_dbfs: peakDbfs,           // špička nahrávky (dBFS)
+    /* Obrys signálu a úseky s výškou — jen pro kresbu grafu ringu. Do měření
+     * tónů nevstupují; vysvětlují, proč je v grafu prázdné místo. */
+    signal_envelope: signalEnvelope,
+    pitch_segments: pitchSegments,
     band,                          // šířka pásma nahrávky (měřeno jednou)
     notes, summary, refs: REFS,
   };
 }
+
+/** Zaokrouhlení na 2 desetinná místa — pro data, která se jen kreslí (obrys
+ *  signálu). Plná přesnost by v každém tónu nesla kilobajty nesmyslných cifer. */
+function round2(x) { return Math.round(x * 100) / 100; }
 
 function measureNote(samples, sampleRate, times, f0raw, idx, t0, t1, band, fach = 'tenor') {
   const dur = t1 - t0;

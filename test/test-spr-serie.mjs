@@ -229,6 +229,47 @@ console.log('\n═══ 5b. Práh hluboko pod daty NESMÍ roztáhnout osu ═�
     `nejvyšší značka ${Math.max(...narrow.map(r => r.h)).toFixed(0)} px z 182 px plochy`);
 }
 
+console.log('\n═══ 5c. Podklad grafu: kde nahrávka zní a kde byla výška ═══');
+{
+  /* Bez podkladu je každé místo bez tónu nerozeznatelné od ticha. Naměřeno na
+   * nahrávce s varhanami (130 s): ani sekunda ticha, výška nalezena ve 32,6 %
+   * rámců, ze 63 tónových úseků 43 mimo obor → graf vypadal děravý. Podklad
+   * kreslí obrys signálu a tmavě místa, kde signál byl, ale výška nevznikla. */
+  const rects = [];
+  const ctx3 = {
+    setTransform() {}, fillText() {}, save() {}, restore() {}, setLineDash() {},
+    beginPath() {}, closePath() {}, clip() {}, rect() {}, moveTo() {}, lineTo() {},
+    stroke() {}, fill() {}, globalAlpha: 1,
+    fillRect(x, y, w2, h2) { rects.push({ x, y, w: w2, h: h2, style: this.fillStyle }); },
+  };
+  const cv3 = { clientWidth: 600, clientHeight: 230, style: {}, getContext: () => ctx3 };
+  const notes = [{ idx: 1, t_start: 2, t_end: 3, dur: 1, note: 'A3', f0: 220,
+    spr: -12, spr_stare: -16, ring_ok: true, ring_dropout: false }];
+  const env = Array.from({ length: 40 }, (_, i) => [i * 0.25, -30 + (i % 4) * 6]);
+  const segs = [{ t0: 5, t1: 8, f0: 150 }, { t0: 12, t1: 13, f0: 220 }];
+
+  rects.length = 0;
+  const opts5c = { signalEnvelope: env, pitchSegments: segs, duration: 15 };
+  const g5 = drawSpr(cv3, notes, { ring_threshold: -20 }, null, opts5c);
+  /* Pruhy úseků s výškou leží v podkladovém pruhu u spodní hrany plochy;
+   * pásma síly hlasu jsou přes celou plochu, takže se poznají podle výšky. */
+  const baseTop = g5.base.lo;
+  const segBars = rects.filter(r => r.y >= baseTop - 1 && r.h > 1 && r.h < 60);
+  check('úseky s výškou se kreslí jako pruh u spodní hrany', segBars.length >= 1,
+    `${segBars.length} pruhů z ${rects.length} obdélníků (pruh od y=${baseTop.toFixed(0)})`);
+  check('pruh nepřetéká přes plochu grafu', rects.every(r => r.h <= 230),
+    `nejvyšší ${Math.max(...rects.map(r => r.h)).toFixed(0)} px`);
+
+  /* Bez podkladových dat se v pruhu nesmí kreslit nic (starší výsledky
+   * v historii podklad nemají). Pásma pozadí tam pořád jsou — měří se proto
+   * jen obdélníky, které do pruhu zasahují. */
+  rects.length = 0;
+  const g5b = drawSpr(cv3, notes, { ring_threshold: -20 });
+  const vPruhu = rects.filter(r => r.y >= g5b.base.lo - 1 && r.y < g5b.base.hi + 1 && r.h < 60);
+  check('bez podkladových dat se podklad nekreslí', vPruhu.length === 0,
+    `${vPruhu.length} obdélníků v pruhu`);
+}
+
 console.log('\n═══ 6. Průběh ringu (ringTrend) a hlášení ═══');
 {
   /* Na řízeném tónu: první polovina s ringem, druhá bez → drop musí vyjít

@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Hlas">
-<link rel="stylesheet" href="src/style.css?v=41">
+<link rel="stylesheet" href="src/style.css?v=42">
 </head>
 <body>
 
@@ -274,14 +274,14 @@
               <span><i style="background:#b5675e"></i>výpadek ringu</span>
               <span><i style="background:#6f6862"></i>neměřeno</span>
               <span>pásma = literatura</span>
-              <!-- ŽÁDNÁ zmínka o „křivka = držený tón". Do 1.0.39 se krátký tón
-                   kreslil sloupcem a držený křivkou, takže vedle sebe stály
-                   sloupec a křivka jako dva tvary téhož grafu — a vypadalo to,
-                   že se v datech míchají dvě různé hodnoty (míchaly se: sloupec
-                   byl starší měření, křivka přesné). Od 1.0.40 má křivku každý
-                   měřený tón, takže tvar značky už nic neznamená a legenda by
-                   jen mátla. Sloupec zbyl jen jako záloha pro tón, ze kterého
-                   se změřit nedalo. -->
+              <!-- Podkladový pruh u spodní hrany: kde nahrávka vůbec zní a kde
+                   v ní byla nalezena výška. Do 1.0.42 byl každý úsek bez tónu
+                   nerozeznatelný od ticha — u nahrávky s varhanami (130 s,
+                   ani sekunda ticha) proto graf vypadal děravý a nebylo poznat
+                   proč. V HTML, ne v plátně: při posuvu by se lepil na okraj
+                   a pletl se s popisky os. -->
+              <span>pruh = kde zní nahrávka</span>
+              <span>světlé značky v pruhu = kde se našla výška</span>
               <span>křivka = průběh ringu v tónu</span>
             </p>
             <p class="hint hidden" id="hint-scroll">Graf se posouvá vodorovně,
@@ -445,6 +445,6 @@
 
 <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
-<script type="module" src="src/app.js?v=41"></script>
+<script type="module" src="src/app.js?v=42"></script>
 </body>
 </html>
