@@ -401,7 +401,14 @@ console.log('\n═══ 12. Vyhodnocení ringu (regrese) ═══');
   // ringu asi polovina tónů — proto se dvouhroté rozdělení řeší mezerou.
   const mk = (sprs) => sprs.map((v, i) => ({
     idx: i, note: 'X', t_start: i, dur: 0.8, spl_dbfs: -12,
-    spr: v, spr_valid: true, f1_tuning_relevant: false, f1_f0_err_pct: NaN,
+    /* ⚠️ DVĚ MĚŘÍTKA, protože je má i reálný tón: `spr_stare` je starší měření
+     * (průměr spekter, na něm stojí srovnání s literaturou) a `spr` je přesné
+     * (po rámcích, p90) — to je o ~4,4 dB výš (naměřeno na reálné nahrávce).
+     * Mock proto musí nést obojí s tím rozdílem: kdyby byly stejné, testy
+     * nepoznají, že se práh a úroveň počítají z různých měřítek. Zadané číslo
+     * je STARÉ (podle něj se rozhoduje `level`), přesné se dopočte. */
+    spr: v + 4.4, spr_stare: v,
+    spr_valid: true, f1_tuning_relevant: false, f1_f0_err_pct: NaN,
     fhe: 2500, bandwidth_hz: 5000,
   }));
   // rovnoměrný hlas → žádný výpadek, i když je hladina nízká
@@ -409,7 +416,7 @@ console.log('\n═══ 12. Vyhodnocení ringu (regrese) ═══');
   check('rovnoměrná hladina → 0 výpadků', a.dropouts.length === 0,
     `${a.dropouts.length}, vyrovnanost ${a.ring_consistency_pct.toFixed(0)} %`);
   check('rovnoměrně nízká hladina → úroveň pod nezpěvákem', a.level === 'pod_nezpevakem',
-    `${a.level} (medián ${a.spr_median.toFixed(1)} dB, mez nezpěváka −22,7)`);
+    `${a.level} (starší měření ${a.spr_median_stare.toFixed(1)} dB, mez nezpěváka −22,7)`);
   // jeden propadlý tón → musí se najít
   const b = ringAnalysis(mk([-15.2, -14.8, -15.5, -28.3, -15.1, -14.9, -15.3, -15.0, -14.7, -15.4]));
   check('jeden tón bez ringu → 1 výpadek', b.dropouts.length === 1,

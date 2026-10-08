@@ -218,7 +218,12 @@ console.log('\n═══ 6. Průběh ringu (ringTrend) a hlášení ═══');
   check('u stabilního tónu je rozkmit malý (do 2 dB)', sS.ring_trend_median_span < 2,
     `${sS.ring_trend_median_span?.toFixed(2)} dB`);
 
-  // Kratší tón než 4 body → ringTrend vrací null, ne nesmysl
+  /* Kratší tón než 8 bodů řady → ringTrend vrací null, ne nesmysl.
+   *
+   * PROČ 8: se 4 body vycházela první i poslední čtvrtina z JEDINÉHO bodu,
+   * takže se „pokles ringu" hlásil i na tónu, kde šlo o šum. Naměřeno: tón
+   * o 0,5 s (4 body řady) se hlásil jako tón s trendem, kdežto s mezí 8 bodů
+   * (od ~0,6 s) ne — a to je správně, na 4 bodech se trend měřit nedá. */
   const short = analyze(voice(0.5, () => 1), SRt, { fach: 'tenor' });
   check('krátký tón → žádné trendy (ne nesmyslné číslo)', (short.summary.ring_trend_tones || 0) === 0,
     `${short.summary.ring_trend_tones} tónů s trendem`);

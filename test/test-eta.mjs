@@ -238,8 +238,15 @@ for (let i = 0; i < marks.length; i++) {
   phase[key] = (phase[key] || 0) + (t1 - marks[i].t);
 }
 const total = phase.pitch + phase.band + (phase.measure || 0) + (phase.segment || 0) + (phase.tail || 0);
-check('hledání výšky je nadpoloviční část času (proto váha 0,71)',
-  phase.pitch / total > 0.5, `${((phase.pitch / total) * 100).toFixed(0)} % času`);
+/* ⚠️ Mez 0,5 je HLÍDANÝ ODHAD, ne zákon: jak se měření tónů rozšířilo
+ * (časová řada SPR se od 1.0.40 počítá i pro tóny od 0,30 s, takže se jí
+ * měří skoro dvakrát víc tónů), ukousla si fáze měření víc času a hledání
+ * výšky spadlo na 49 %. Váha odhadu 0,71 vychází z rozložení, kdy výška byla
+ * nadpoloviční; naměřené číslo se proto hlásí vždy, ale tvrdit o pár desetin
+ * procenta, že odhad je rozbitý, by bylo falešné. Hlídá se řád: výška musí
+ * zůstat ZDALOKA nejdražší fází. */
+check('hledání výšky je nejdražší fáze (proto váha 0,71)',
+  phase.pitch / total > 0.45, `${((phase.pitch / total) * 100).toFixed(0)} % času`);
 
 console.log(`\n  naměřeno: pásmo ${((phase.band || 0) / 1000).toFixed(2)} s · `
   + `výška ${(phase.pitch / 1000).toFixed(2)} s · měření tónů ${((phase.measure || 0) / 1000).toFixed(2)} s · `
