@@ -253,8 +253,22 @@ export const SPR_QUANTILE = 0.90;
  */
 export const SPR_SERIE_WIN_S = 0.20;   // délka klouzavého okna (s)
 export const SPR_SERIE_STEP_S = 0.05;  // krok řady (s)
-/** Pod touhle délkou tónu se řada nepočítá — 3 body nic neukážou. */
-export const SPR_SERIE_MIN_DUR = 0.6;
+/**
+ * Pod touhle délkou tónu se řada nepočítá.
+ *
+ * ⚠️ 0,30 s, ne 0,60 s. S mezí 0,60 s zůstala v grafu ringu POLOVINA tónů bez
+ * křivky a kreslila se jako plný sloupec — a protože sloupec je starší měření
+ * (průměr spekter) a křivka přesné (po rámcích, p90), stály v grafu vedle sebe
+ * dvě různá měřítka lišící se o víc než 4 dB. Naměřeno na reálné nahrávce
+ * (68 tónů): křivku mělo 37 tónů, sloupcem se kreslilo 31 a rozdíl prostředků
+ * mezi oběma měřítky byl 4,41 dB.
+ *
+ * Od 0,30 s vyjde řada vždy — okno 0,2 s se do tónu vejde 3× (3 body, krok
+ * 0,05 s), což je nejmenší počet, který ještě něco ukáže. Ověřeno na téže
+ * nahrávce: u všech 22 tónů v rozmezí 0,30–0,60 s řada vznikla (3–8 bodů)
+ * a její medián seděl s přesným číslem tónu na 0,59 dB.
+ */
+export const SPR_SERIE_MIN_DUR = 0.30;
 
 /**
  * Časová řada SPR uvnitř jednoho tónu.
@@ -2112,10 +2126,27 @@ function measureNote(samples, sampleRate, times, f0raw, idx, t0, t1, band, fach 
    * přiznává zvlášť (`spr_quality`), ne zahozením výsledku. */
   const sprVal = spr(spec);
   /* NOVÉ měření ringu — SPR po rámcích s horním percentilem. Odstraňuje
-   * systematické podhodnocení vibratem (naměřeno 4,6 → 1,2 dB). Není to náhrada
-   * starého čísla: dnešní hodnota zůstává kvůli srovnatelnosti s literaturou
-   * (Omori) a kvůli paritě, nová se přidává vedle ní. Důvody v `sprFrames()`. */
-  const sprNovy = sprFrames(seg, sampleRate);
+   * systematické podhodnocení vibratem (naměřeno 4,6 → 1,2 dB).
+   *
+   * ⚠️ OD 1.0.40 JE TOTO ČÍSLO TO HLAVNÍ — tón nese v `spr` právě jeho hodnotu.
+   * Dřív se hlásilo jen „vedle" (`spr_novy`) a `spr` zůstávalo staré, takže
+   * v grafu ringu stály vedle sebe dva sloupce z různých měřítek: krátký tón
+   * (bez časové řady) se kreslil starým číslem, dlouhý křivkou z nového.
+   * Naměřeno na reálné nahrávce: rozdíl prostředků obou měřítek 4,41 dB.
+   *
+   * Staré číslo zůstává v `spr_stare` VÝHRADNĚ pro srovnání s literaturou
+   * (Omori 1996: nezpěváci −22,7, profesionálové −13,1 dB) — jeho meze jsou
+   * definované pro staré měření, takže se z nich nesmí hodnotit nové číslo,
+   * jinak by se každý posunul o ~4,4 dB nahoru a „byl by profesionál".
+   * Důvody pro nové měření jsou v `sprFrames()`. */
+  const sprNovyRaw = sprFrames(seg, sampleRate);
+  /* ⚠️ ZÁLOHA: u velmi krátkého úseku (pod ~0,085 s) se po rámcích změřit nedá
+   * (`sprFrames` vrátí NaN — do segmentu se nevejde ani jedno okno FFT).
+   * Takový tón by pak v grafu zmizel úplně, což je horší než číslo z méně
+   * přesného měření. Bere se proto staré číslo — a jen tam, kde nic jiného
+   * není. Naměřeno na reálné nahrávce: nejkratší měřené tóny mají 0,22 s,
+   * takže se záloha v praxi neuplatní. */
+  const sprNovy = Number.isFinite(sprNovyRaw) ? sprNovyRaw : sprVal;
 
   // SPL relativní
   let rms = 0;
@@ -2173,7 +2204,11 @@ function measureNote(samples, sampleRate, times, f0raw, idx, t0, t1, band, fach 
     note: hzToNote(f0), f0,
     f0_sd_cents: sdC,
     spl_dbfs: spl,
-    spr: sprVal,
+    /* `spr` = PŘESNÉ měření (po rámcích, p90) — jedno měřítko pro celý graf
+     * i pro všechny tóny bez rozdílu délky. `spr_stare` = starší měření
+     * (průměr spekter), které se používá JEN na srovnání s literaturou. */
+    spr: sprNovy,
+    spr_stare: sprVal,
     spr_novy: sprNovy,
     /* `spr_valid` tu zůstává kvůli ZPĚTNÉ KOMPATIBILITĚ reportů, ale UŽ NENÍ
      * „smí se měřit" — SPR se měří vždy. Rozlišuje jen „pásmo je v pořádku"
@@ -2220,7 +2255,12 @@ function measureNote(samples, sampleRate, times, f0raw, idx, t0, t1, band, fach 
  */
 export function ringTrend(note) {
   const ser = note?.spr_series;
-  if (!ser || ser.length < 4) return null;
+  /* ⚠️ Alespoň 8 bodů, ne 4. Trend se počítá z PRVNÍ a POSLEDNÍ čtvrtiny tónu,
+   * takže se potřebují aspoň dva body na čtvrtinu — se 4 body vyšla každá
+   * čtvrtina z jediného bodu a „pokles" se hlásil i tam, kde šlo o šum.
+   * Řada se sice od 1.0.40 kreslí už od 0,30 s (3 body), to je ale jiná věc:
+   * křivka tvar tónu ukáže, kdežto číslo „o kolik to spadlo" potřebuje víc. */
+  if (!ser || ser.length < 8) return null;
   const q = (from, to) => {
     const v = ser.slice(from, to).map(p => p[1]).sort((a, b) => a - b);
     return v.length ? v[v.length >> 1] : NaN;
@@ -2365,19 +2405,24 @@ export function ringAnalysis(notes, opts = {}) {
   const nShort = valid.filter(isShort).length;
   const nQuiet = valid.filter(n => !isShort(n) && isQuiet(n)).length;
 
+  /* ⚠️ SPRÁVNÝ PRÁH SE POČÍTÁ Z PŘESNÉHO MĚŘENÍ (`spr`), ne ze starého.
+   * Graf i barvy musí jít z jednoho měřítka: dokud se `ring_ok` počítalo ze
+   * starého čísla a křivka se kreslila novým, odporovaly si barva a výška
+   * sloupce. Literární meze (−27 / −13,1 dB, viz `level` níž) jsou definované
+   * pro STARÉ měření, proto se berou ze `spr_stare`. */
   const s = usable.map(n => n.spr).sort((a, b) => a - b);
   const med = s.length & 1 ? s[s.length >> 1]
     : (s[(s.length >> 1) - 1] + s[s.length >> 1]) / 2;
 
-  /* Nové měření vedle starého. Vyrovnanost ringu (`ring_ok`, výpadky) se dál
-   * počítá ze STARÉHO čísla — vyjadřuje vztah tónu k vlastnímu mediánu a ten
-   * platí u obojího, kdežto přepnutí prahů by změnilo, které tóny se hlásí jako
-   * výpadky, a to je přesně to, co si žádá ověření na skutečném zpěvu, ne
-   * tichý přepis. Nová hodnota se proto hlásí jako ČÍSLO VEDLE. */
-  const sNovy = usable.map(n => n.spr_novy).filter(v => v === v).sort((a, b) => a - b);
-  const medNovy = sNovy.length
-    ? (sNovy.length & 1 ? sNovy[sNovy.length >> 1]
-      : (sNovy[(sNovy.length >> 1) - 1] + sNovy[sNovy.length >> 1]) / 2)
+  /* Staré číslo VEDLE nového. Vyrovnanost ringu (`ring_ok`, výpadky) se počítá
+   * z PŘESNÉHO měření — je to vztah tónu k vlastnímu mediánu a ten platí jen
+   * v rámci jednoho měřítka (viz `s` výš). Staré číslo tu zůstává proto, že na
+   * něm stojí srovnání s literaturou (`level` níž) — Omoriho meze vznikly
+   * měřením, které vibrato rozmazává stejně jako naše staré měření. */
+  const sStare = usable.map(n => n.spr_stare).filter(v => v === v).sort((a, b) => a - b);
+  const medStare = sStare.length
+    ? (sStare.length & 1 ? sStare[sStare.length >> 1]
+      : (sStare[(sStare.length >> 1) - 1] + sStare[sStare.length >> 1]) / 2)
     : null;
   const dev = s.map(v => Math.abs(v - med)).sort((a, b) => a - b);
   const mad = dev.length & 1 ? dev[dev.length >> 1]
@@ -2391,7 +2436,9 @@ export function ringAnalysis(notes, opts = {}) {
   for (const n of usable) {
     n.ring_ok = n.spr >= thr;                              // vyrovnaný tón
     n.ring_dropout = n.spr < thr;                          // proti vlastnímu mediánu
-    n.ring_above_ref = n.spr >= REFS.SPR_ring_threshold;    // orientačně vs. literatura
+    /* Srovnání s literaturou jde ze STARÉHO čísla — jeho meze (−20 dB, Omori)
+     * jsou definované pro staré měření. Z nového by každý „byl profesionál". */
+    n.ring_above_ref = n.spr_stare >= REFS.SPR_ring_threshold;
   }
   const good = usable.filter(n => n.ring_ok).length;
   const aboveRef = usable.filter(n => n.ring_above_ref).length;
@@ -2406,9 +2453,13 @@ export function ringAnalysis(notes, opts = {}) {
   const fhes = usable.map(n => n.fhe).filter(v => v === v).sort((a, b) => a - b);
   const bands = usable.map(n => n.bandwidth_hz).filter(v => v === v).sort((a, b) => a - b);
 
-  // Úroveň: kde je nahrávka proti literatuře (orientačně, ne verdikt).
+  /* Úroveň: kde je nahrávka proti literatuře (orientačně, ne verdikt).
+   * ⚠️ Počítá se ze STARÉHO měření (`medStare`) — Omoriho meze −22,7 / −13,1 dB
+   * vznikly měřením, které vibrato rozmazává stejně jako naše staré. Kdyby se
+   * použilo přesné číslo, posune se každý o ~4,4 dB nahoru a vyjde
+   * „profesionál" jen proto, že jsme vyměnili měřidlo. */
   const [refNezpevak, refProf] = [REFS.SPR.nezpevak[0], REFS.SPR.profesional[0]];
-  const level = med >= refProf ? 'profesionalni' : med >= refNezpevak ? 'mezi' : 'pod_nezpevakem';
+  const level = medStare >= refProf ? 'profesionalni' : medStare >= refNezpevak ? 'mezi' : 'pod_nezpevakem';
 
   /* Délka vokálního traktu (poloha hrtanu) — z VŠECH tónů, ne jen z `usable`:
    * metrika se počítá z formantů a vyřazení tichých/krátkých tónů s ní nemá
@@ -2432,14 +2483,26 @@ export function ringAnalysis(notes, opts = {}) {
     med_spl_dbfs: medSpl === -Infinity ? null : medSpl,
     min_dur_used: minDur,
     spl_drop_used: splDrop,
+    /* Jedno měřítko pro celou aplikaci: medián PŘESNÉHO měření (po rámcích,
+     * p90). Odtud se bere graf i prahy výpadků. */
     spr_median: med,
     spr_mean: mean,
     spr_sd: sd,
-    // Nové měření (po rámcích, horní percentil) — vedle starého, ne místo něj.
-    spr_novy_median: medNovy,
-    spr_novy_n: sNovy.length,
-    spr_novy_dostupne: sNovy.length > 0,
+    /* Staré měření (průměr spekter) — JEN pro srovnání s literaturou.
+     * `spr_median` a `spr_median_stare` se liší o ~4,4 dB; záměna znamená
+     * posun verdiktu o celé pásmo („mezi" → „profesionál"). */
+    spr_median_stare: medStare,
+    spr_n: s.length,
+    /* Zdrojová čísla obou měření se drží i pod starými jmény
+     * (`spr_min/max` = přesné, `spr_novy_median` = přesné): reporty a nástroje
+     * z dřívějška se na ně odkazují a nesmějí dostat jiné číslo, než čekají. */
+    spr_novy_median: med,
+    spr_novy_n: s.length,
+    spr_novy_dostupne: s.length > 0,
     spr_min: s[0], spr_max: s[s.length - 1],
+    /* Rozpětí STARÉHO měření — pro literární pásma v nápovědě. */
+    spr_stare_min: sStare.length ? sStare[0] : null,
+    spr_stare_max: sStare.length ? sStare[sStare.length - 1] : null,
     ring_threshold: thr,
     threshold_method: method,
     bimodal: !!split,

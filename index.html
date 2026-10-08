@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Hlas">
-<link rel="stylesheet" href="src/style.css?v=39">
+<link rel="stylesheet" href="src/style.css?v=40">
 </head>
 <body>
 
@@ -274,13 +274,15 @@
               <span><i style="background:#b5675e"></i>výpadek ringu</span>
               <span><i style="background:#6f6862"></i>neměřeno</span>
               <span>pásma = literatura</span>
-              <!-- Tvar značky podle délky tónu. Bez téhle věty vypadalo
-                   „obdélník vedle křivky" jako dva různé údaje o témž tónu —
-                   jsou to ale dva RŮZNÉ tóny: krátký kreslí sloupec, držený
-                   (od 0,6 s) křivku, protože v jeho průběhu je vidět, jak ring
-                   kolísá. V HTML, ne v plátně: v plátně by se lepila na okraj
-                   při posuvu a pletla se s popisky os. -->
-              <span>křivka = držený tón</span>
+              <!-- ŽÁDNÁ zmínka o „křivka = držený tón". Do 1.0.39 se krátký tón
+                   kreslil sloupcem a držený křivkou, takže vedle sebe stály
+                   sloupec a křivka jako dva tvary téhož grafu — a vypadalo to,
+                   že se v datech míchají dvě různé hodnoty (míchaly se: sloupec
+                   byl starší měření, křivka přesné). Od 1.0.40 má křivku každý
+                   měřený tón, takže tvar značky už nic neznamená a legenda by
+                   jen mátla. Sloupec zbyl jen jako záloha pro tón, ze kterého
+                   se změřit nedalo. -->
+              <span>křivka = průběh ringu v tónu</span>
             </p>
             <p class="hint hidden" id="hint-scroll">Graf se posouvá vodorovně,
                ukazatel jede s nahrávkou.</p>
@@ -360,8 +362,9 @@
       </div>
       <p class="warn-soft hidden" id="r-dropouts"></p>
       <h3>Kde se ring ztrácí</h3>
-      <p class="hint">Každý sloupec je jeden tón. Vodorovná osa je <strong>čas
-         v nahrávce</strong> — najdi v ní přesné místo, kde je sloupec červený,
+      <p class="hint">Každý kopeček je jeden tón — jeho výška je síla ringu a sklon
+         ukazuje, jak se v průběhu tónu mění. Vodorovná osa je <strong>čas
+         v nahrávce</strong> — najdi v ní přesné místo, kde je tón červený,
          a vrať se tam.</p>
       <details class="tips">
         <summary>Naměřené hodnoty a čísla (pro podrobné srovnání)</summary>
@@ -370,7 +373,7 @@
             <thead>
               <tr>
                 <th>#</th><th>tón</th><th>čas</th><th>f0 Hz</th><th>délka</th>
-                <th>SPR dB</th><th>ring</th><th>F1</th><th>F2</th><th>F1:F0 %</th>
+                <th>SPR dB</th><th>SPR starší</th><th>ring</th><th>F1</th><th>F2</th><th>F1:F0 %</th>
                 <th>HNR</th><th>vibr. Hz</th>
               </tr>
             </thead>
@@ -442,6 +445,6 @@
 
 <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
-<script type="module" src="src/app.js?v=39"></script>
+<script type="module" src="src/app.js?v=40"></script>
 </body>
 </html>

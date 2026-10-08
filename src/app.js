@@ -458,16 +458,21 @@ function showResult(res, samples, sampleRate, label, secs, blob) {
    * nepodhodnocuje — naměřeno na Janově nahrávce +4,5 dB. Kdybychom jím staré
    * číslo nahradili, člověk se ocitne nad profesionálním pásmem jen proto, že
    * jsme vyměnili měřidlo, ne protože by zpíval líp. Proto se ukazují obě:
-   * srovnatelné s literaturou (staré) a přesné (nové), s přiznaným rozdílem. */
-  const novy = s.spr_novy_median;
-  const maNove = typeof novy === 'number' && Number.isFinite(novy);
+   * srovnatelné s literaturou (staré) a přesné (nové), s přiznaným rozdílem.
+   *
+   * ⚠️ OD 1.0.40 JE PŘESNÉ ČÍSLO TO HLAVNÍ: `s.spr_median` už JE přesné
+   * (po rámcích) a staré se bere ze `s.spr_median_stare`. Dřív to bylo obráceně.
+   */
+  const stare = s.spr_median_stare;
+  const maNove = typeof s.spr_median === 'number' && Number.isFinite(s.spr_median);
+  const rozdil = maNove && Number.isFinite(stare) ? s.spr_median - stare : null;
   const detail = maNove
-    ? `Srovnatelné s literaturou ${fmt(s.spr_median, 1)} dB · přesné číslo ${fmt(novy, 1)} dB`
-    : `SPR ${fmt(s.spr_median, 1)} dB (medián)`;
-  const vysvetleni = maNove
-    ? lvl[2] + ` Dvě čísla se liší o ${fmt(novy - s.spr_median, 1)} dB proto, že vibrato ` +
+    ? `Srovnatelné s literaturou ${fmt(stare, 1)} dB · přesné číslo ${fmt(s.spr_median, 1)} dB`
+    : `SPR ${fmt(stare, 1)} dB (medián)`;
+  const vysvetleni = maNove && rozdil !== null
+    ? lvl[2] + ` Dvě čísla se liší o ${fmt(rozdil, 1)} dB proto, že vibrato ` +
       'staršímu měření vrchol rozmazává dolů. Pro srovnání s literaturou platí to první, ' +
-      'druhé je blíž skutečnosti.'
+      'druhé je blíž skutečnosti a tím je kreslený graf ringu.'
     : lvl[2];
   setKpi('k-level', lvl[0], detail, lvl[1], 'k-level-d', vysvetleni);
 
@@ -613,7 +618,11 @@ function showResult(res, samples, sampleRate, label, secs, blob) {
       Object.assign(document.createElement('td'), { textContent: fmtTime(n.t_start) }),
       cell(n.f0, 1),
       cell(n.dur, 2),
+      /* Sloupec „SPR“ = přesné měření, tedy TOTÉŽ, jakým je kreslený graf.
+       * Staré číslo má vlastní sloupec — jinak by se v tabulce dvě měřítka
+       * slévala do jednoho čísla a nešlo by poznat, které je které. */
       cell(n.spr, 1),
+      cell(n.spr_stare, 1),
       ring,
       cell(n.f1),
       cell(n.f2),
@@ -859,8 +868,12 @@ function addToHistory() {
     n_notes: current.result.n_notes,
     spr_unusable: !!s.spr_unusable,
     reason: s.reason || null,
+    /* Jedno měřítko: `spr_median` je PŘESNÉ číslo (po rámcích, p90) — stejné,
+     * jaké kreslí graf. `spr_median_stare` (průměr spekter) se ukládá jen kvůli
+     * srovnání s literaturou; v tabulce historie se ukazuje přesné. */
     spr_median: s.spr_median ?? null,
-    spr_novy_median: s.spr_novy_median ?? null,
+    spr_median_stare: s.spr_median_stare ?? null,
+    spr_novy_median: s.spr_median ?? null,
     spr_sd: s.spr_sd ?? null,
     ring_pct: s.ring_consistency_pct ?? null,
     fhe: s.fhe_median ?? null,
@@ -881,10 +894,9 @@ function addToHistory() {
  *   ring_pct    — živý režim vyrovnanost ringu ZMĚŘIT NEUMÍ (na to je potřeba
  *                 segmentovat tóny z celé nahrávky), takže zůstává prázdné
  *
- * POZOR na jedno past: `spr_novy_median` se NEPŘEBÍRÁ z `sprMedian`. Živé
- * číslo je medián přes rámce (ne přes tóny — živý režim tóny nezná), takže se
- * do sloupce „přesné číslo" ukládá, ale nesmí se sčítat dohromady s nahrávkami
- * bez poznámky. Rozdíl je vidět v tom, že záznam má `live: true`.
+ * POZOR na jedno past: živé měření počítá medián PŘES RÁMCE (ne přes tóny —
+ * živý režim tóny nezná), takže `spr_median` u živého záznamu a u analýzy
+ * nahrávky nejsou totéž. Rozdíl je vidět v tom, že záznam má `live: true`.
  */
 function addLiveToHistory(s) {
   const rows = loadHist();
@@ -1375,16 +1387,17 @@ function makeMarkdown() {
   } else {
     L.push(`- Vyrovnanost: **${s.notes_with_ring}/${s.n_notes}** tónů ` +
       `(${s.ring_consistency_pct.toFixed(1)} %) — na kolika tónech se barva neláme`);
-    L.push(`- Síla hlasu (proti literatuře): **${s.level}**, SPR medián **${fmt(s.spr_median, 2)} dB** ` +
-      `(${s.pct_above_ref.toFixed(0)} % tónů nad ${s.ref_threshold} dB)`);
-    /* Druhé číslo vedle prvního — staré je srovnatelné s literaturou, nové je
-     * přesnější. Kdyby tu bylo jen nové, ztratí se vazba na Omoriho hodnoty;
-     * kdyby jen staré, je číslo systematicky nižší, než hlas ve skutečnosti je. */
-    if (Number.isFinite(s.spr_novy_median)) {
-      L.push(`- Přesné SPR (po rámcích, 90. percentil): **${fmt(s.spr_novy_median, 2)} dB** ` +
-        `— o ${fmt(s.spr_novy_median - s.spr_median, 1)} dB výš. Starší měření (průměr spekter ` +
-        'přes tón) podhodnocuje, protože vibrato vrchol v pásmu 2–4 kHz rozmazává. ' +
-        'Pro srovnání s literaturou platí hodnota výše, tahle je blíž skutečnosti.');
+    /* Dvě čísla na dvou řádcích a každé s vysvětlením, které to je — dohromady
+     * by se pletlo, které platí na co (jedno je měřítko grafu, druhé literatura). */
+    L.push(`- SPR (přesné měření, po rámcích, 90. percentil): **${fmt(s.spr_median, 2)} dB** ` +
+      `(± ${fmt(s.spr_sd, 2)} dB) — TÍMTO měřítkem je kreslený graf a počítají se výpadky`);
+    if (Number.isFinite(s.spr_median_stare)) {
+      L.push(`- SPR (starší měření, průměr spekter): **${fmt(s.spr_median_stare, 2)} dB** — ` +
+        'jen pro srovnání s literaturou (Omori 1996: nezpěváci −22,7, profesionálové −13,1 dB). ' +
+        'Podhodnocuje o ' + fmt(s.spr_median - s.spr_median_stare, 1) + ' dB, protože vibrato ' +
+        'vrchol v pásmu 2–4 kHz rozmazává.');
+      L.push(`- Síla hlasu (proti literatuře): **${s.level}** ` +
+        `(${s.pct_above_ref.toFixed(0)} % tónů nad ${s.ref_threshold} dB, měřeno starším číslem)`);
     }
     L.push(`- Rozptyl ± ${fmt(s.spr_sd, 2)} dB, rozsah ${fmt(s.spr_min, 1)} až ${fmt(s.spr_max, 1)} dB`);
     L.push(`- Práh výpadku ${fmt(s.ring_threshold, 1)} dB (${s.threshold_method})`);

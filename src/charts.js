@@ -320,7 +320,20 @@ export function drawSpr(canvas, notes, summary, playheadT = null, opts = {}) {
     ctx.fillStyle = fill;
     ctx.fillRect(clipL, Math.min(y(a), y(b)), clipR - clipL, Math.abs(y(a) - y(b)));
   }
-  /* Sloupce: šířka podle skutečné délky tónu.
+  /* VŠECHNY TÓNY KŘIVKOU. Krátký tón se dřív kreslil plným sloupcem, protože
+   * časovou řadu dostal až od 0,6 s — jenže sloupec je starší měření (průměr
+   * spekter) a křivka přesné (po rámcích, p90), takže v jednom grafu stála dvě
+   * měřítka vedle sebe s rozdílem přes 4 dB. Graf působil, jako by se „míchaly
+   * dva typy hodnot" — a přesně to se stalo.
+   *
+   * Řada je proto nově od 0,30 s (`SPR_SERIE_MIN_DUR`), takže křivku má každý
+   * měřený tón. Křivka se kreslí od spodní hrany osy a v pauzách mezi tóny nic
+   * není — graf se tím sám dělí na jednotlivé tóny a je z něj vidět, kde ring
+   * v průběhu tónu padá.
+   *
+   * Plný sloupec zůstává jen jako ZÁLOHA pro tón, který řadu nemá (kratší než
+   * 0,30 s, nebo se spektrum nepodařilo změřit) — jinak by takový tón v grafu
+   * zmizel úplně.
    *
    * ⚠️ TŘI BARVY, NE DVĚ. Tón, který má platné SPR, ale analýza ho z hodnocení
    * ringu VYŘADILA (kratší než ~0,30 s nebo příliš tichý), se NESMÍ kreslit
@@ -350,11 +363,9 @@ export function drawSpr(canvas, notes, summary, playheadT = null, opts = {}) {
      * Stuha se kreslí jako JEDNA plocha (tam a zpět), ne dva tahy — dva tahy by
      * v překryvu ztmavly a vypadaly jako změna barvy.
      *
-     * POZOR — proč to vedle sebe vypadalo jako dvě různé věci: křivku dostane
-     * jen tón od `SPR_SERIE_MIN_DUR` (0,6 s). Kratší tón proto zůstane plným
-     * sloupcem (od své hodnoty dolů), delší se rozkreslí křivkou v čase. Nejsou
-     * to dva údaje o témž tónu — jsou to dva RŮZNÉ tóny a každý je nakreslený
-     * tím, co o něm jde říct. Vysvětluje to legenda pod grafem. */
+     * ⚠️ PŘED 1.0.40 BYLA ŘADA JEN OD 0,6 s, takže kratší tón zůstal plným
+     * sloupcem a v jednom grafu se potkávaly dvě měřítka (viz komentář výš).
+     * Dnes má řadu každý tón, který se dá změřit. */
     const ser = n.spr_series;
     if (ser && ser.length >= 2) {
       const t0 = n.t_start;
