@@ -21,6 +21,10 @@ const PORT = Number(process.env.PORT || 8137);
 const CDP_PORT = Number(process.env.CDP_PORT || 9361);
 const CHROME = process.env.CHROME || 'chromium-browser';
 const PROFILE = path.join(process.env.HOME, '.cache', 'va-chrome-shot-spr');
+/* APP_URL = nasazená adresa (např. GitHub Pages). Když je zadaná, statický
+ * server se nespouští a snímek se dělá z PRODUKCE — to je jediné ověření,
+ * že se opravdu nasadilo to, co se testovalo. */
+const APP_URL = process.env.APP_URL || '';
 
 if (!existsSync(FILE)) { console.error(`chybí soubor ${FILE}`); process.exit(2); }
 
@@ -37,7 +41,7 @@ const server = createServer((req, res) => {
     res.end(b);
   } catch { res.writeHead(404); res.end('ne'); }
 });
-await new Promise(r => server.listen(PORT, r));
+if (!APP_URL) await new Promise(r => server.listen(PORT, r));
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const chrome = spawn(CHROME, ['--headless=new', '--disable-gpu', '--no-sandbox', '--mute-audio',
@@ -79,14 +83,20 @@ function send(method, params = {}) {
     if (m.method === 'Page.javascriptDialogOpening') send('Page.handleJavaScriptDialog', { accept: true });
   });
   await send('Page.enable'); await send('Runtime.enable');
-  await send('Page.navigate', { url: `http://localhost:${PORT}/index.html` });
-  await sleep(2500);
-  await send('Runtime.evaluate', { expression: `(async () => {
-    const rs = await navigator.serviceWorker.getRegistrations();
-    await Promise.all(rs.map(x => x.unregister()));
-    for (const k of await caches.keys()) await caches.delete(k);
-    return 'ok';
-  })()`, awaitPromise: true });
+  await send('Page.navigate', { url: APP_URL || `http://localhost:${PORT}/index.html` });
+  await sleep(3000);
+  if (!APP_URL) {
+    await send('Runtime.evaluate', { expression: `(async () => {
+      const rs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(rs.map(x => x.unregister()));
+      for (const k of await caches.keys()) await caches.delete(k);
+      return 'ok';
+    })()`, awaitPromise: true });
+    await send('Page.reload', { ignoreCache: true });
+    await sleep(3000);
+  }
+  const ver = await send('Runtime.evaluate', { expression: `document.getElementById('ver')?.textContent || document.body.innerText.match(/1\\.0\\.\\d+/)?.[0] || ''`, returnByValue: true });
+  console.log('verze na stránce: ' + (ver.result?.value || '?'));
 
   const b64 = readFileSync(FILE).toString('base64');
   await send('Runtime.evaluate', { expression: `(async () => {
