@@ -62,34 +62,56 @@ export const SPR_H = 230;
 const SPR_PAD = { l: 46, r: 12, t: 14, b: 34 };
 
 /**
- * Minimální šířka, na kterou se jeden tón v grafu ringu vykreslí.
+ * Kolik pixelů má dostat TYPICKÝ tón v grafu ringu.
  *
- * PROČ 6 px: při 4 px a méně splývají sousední sloupce a ztratí se rozdíl mezi
- * tónem s ringem a bez — což je přesně to, kvůli čemu graf existuje. Uživatel
- * na 4minutové nahrávce viděl „nalepené" hodnoty; naměřeno, že při 6 px na tón
- * je ještě poznat mezera, takže se graf musí dát posouvat.
+ * ⚠️ Měřítko se NESMÍ počítat z POČTU tónů (dřív `počet × 6 px`). To platí jen
+ * na nahrávce, kde se zpívá pořád: když je v nahrávce 15 s pauza nebo dlouhé
+ * ticho, čas se do šířky rozprostře a na tóny zbydou 2 px.
+ *
+ * Naměřeno na reálné nahrávce uživatele (154 s, 95 tónů, 88 s zpěvu, medián
+ * tónu 0,60 s): `počet × 6 px` → plátno 599 px = **3,51 px/s**, medián šířky
+ * tónu **2,1 px**, a **jen 24 z 95 tónů bylo v grafu rozeznatelných** (zbytek
+ * se slil do souvislé šmouhy — 91 % sloupců plátna mělo inkoust tónu).
+ * Přesně to uživatel popsal jako „graf je nahuštěný na určitou plochu“.
+ *
+ * Měřítko se proto bere z DÉLKY TÓNU: typický (mediánový) tón má dostat
+ * `MIN_PX_PER_NOTE` px, tedy `px/s = MIN_PX_PER_NOTE / mediánDélky`. Graf je
+ * pak delší než obrazovka a posouvá se — což je levnější než nečitelný graf.
+ *
+ * ⚠️ 8 px je vybrané číslo (Jan, 1.0.43): při 12 px vyšlo plátno 3 079 px
+ * (na telefonu ~10 obrazovek posunu), 8 px dá 2 052 px / ~7 obrazovek a tóny
+ * jsou pořád výrazně oddělené. Když se mění, hýbe se tím i `test-sirka-grafu`.
  */
-const MIN_PX_PER_NOTE = 6;
+const MIN_PX_PER_NOTE = 8;
+/** Krátký tón (pod 0,15 s) by jinak měřítko vystřelil do absurdní šířky. */
+const MIN_TONE_S = 0.15;
+/**
+ * Strop šířky plátna. Bez něj by pětiminutová nahrávka vyšla na 6 000 px a na
+ * telefonu s dpr 3 by bitmapa měla 18 000 px (desítky MB) — prohlížeč by
+ * zpomalil. Se stropem se dlouhá nahrávka jen víc zmáčkne, ne že by graf zmizel.
+ */
+export const MAX_CHART_W = 4000;
 
 /**
  * Kolik CSS pixelů šířky si graf ringu vyžádá, aby tóny nebyly nalepené.
  *
- * Do šířky okna se vykresluje napevno (nic se neposouvá), takže se posuvné
- * plátno zapíná až u delších nahrávek. Vrací 0, když se to nepozná —
- * `Math.max(0, …)` níž by jinak z nesmyslné délky udělal nulovou šířku.
+ * Do šířky okna se kreslí napevno (nic se neposouvá), takže se posuvné plátno
+ * zapíná až u delších nahrávek. Vrací 0, když se to nepozná nebo když se graf
+ * do okna vejde.
  *
  * @param {number} availW šířka, která je k dispozici v CSS px
  * @param {object[]} notes tóny
  * @param {number} t1 délka nahrávky v sekundách
  */
 export function sprNeededWidth(availW, notes, t1) {
-  const meas = (notes || []).filter(n => n.spr === n.spr);
+  const meas = (notes || []).filter(n => n.spr === n.spr && n.dur > 0);
   if (!meas.length || !(t1 > 0) || !(availW > 0)) return 0;
-  if (meas.length * MIN_PX_PER_NOTE <= availW) return 0;
-  // sloupec dostane aspoň MIN_PX_PER_NOTE, ale ne šířku nahrávky — u dvou
-  // dlouhých tónů by jinak graf vyjel do absurdní šířky
-  const w = Math.ceil(meas.length * MIN_PX_PER_NOTE);
-  return Math.min(Math.ceil(w * 1.05), Math.max(availW, 4000));
+  const durs = meas.map(n => n.dur).sort((a, b) => a - b);
+  const medDur = Math.max(MIN_TONE_S, durs[durs.length >> 1]);
+  const pxPerS = MIN_PX_PER_NOTE / medDur;
+  const want = Math.ceil(t1 * pxPerS);
+  if (want <= availW) return 0;
+  return Math.min(want, MAX_CHART_W);
 }
 
 /* Spektrogram má STEJNOU výšku jako graf ringu (SPR_H). Když byl vyšší
@@ -169,6 +191,11 @@ export function sprGeom(w, h, notes, summary, offX = 0, duration = 0) {
   if (thrIn) { lo = Math.min(lo, thr - 1.5); hi = Math.max(hi, thr + 1.5); }
   const pad = Math.max(2, (hi - lo) * 0.08);
   lo -= pad; hi += pad;
+  /* Pásmo, do kterého se kreslí obrys signálu — proužek u spodní hrany plochy.
+   * ⚠️ Měří se v PIXELECH, ne v dB: v dB vyšel podle rozpětí osy jednou 6 px,
+   * jednou 30 px a čitelnost se tím měnila podle nahrávky. Pevných 14 px drží
+   * stejný vzhled vždy a je to orientační pruh, ne další měřítko dB. */
+  const base = { lo: SPR_PAD.t + plotH - 16, hi: SPR_PAD.t + plotH - 2 };
   /* Konec osy: délka nahrávky, když ji známe — jinak konec posledního tónu.
    * Nikdy ale méně, než kam sahají data: tóny se nesmí ocitnout mimo osu. */
   const lastNoteEnd = Math.max(...notes.map(n => n.t_end), 0);
@@ -180,6 +207,7 @@ export function sprGeom(w, h, notes, summary, offX = 0, duration = 0) {
   return {
     w, h, padL: SPR_PAD.l, padR: SPR_PAD.r, padT: SPR_PAD.t, padB: SPR_PAD.b,
     plotW, plotH, lo, hi, t1, x, y, meas, offX,
+    base: base,
     /* Okno, do kterého se má kreslit (CSS px). Při posuvu se do plátna kreslí
      * celá šířka grafu, ale vidět je jen okno — kresba se podle toho ořezává,
      * jinak by `x()` u velkého offX odešlo do záporných čísel a canvas by
@@ -306,7 +334,7 @@ export function drawSpr(canvas, notes, summary, playheadT = null, opts = {}) {
     ctx.fillText(summary?.reason || 'Ring nelze měřit', 46, h / 2);
     return null;
   }
-  const { padL, padR, padT, padB, plotW, plotH, lo, hi, t1, x, y, meas, clipL, clipR } = g;
+  const { padL, padR, padT, padB, plotW, plotH, lo, hi, t1, x, y, meas, clipL, clipR, base } = g;
 
   /* Při posuvu se obsah plátna posouvá — pevné prvky (osa Y, pásma, popisky)
    * se proto kreslí s posunem podle scrollu, aby zůstaly na místě okna. */
@@ -343,6 +371,75 @@ export function drawSpr(canvas, notes, summary, playheadT = null, opts = {}) {
     ctx.fillStyle = fill;
     ctx.fillRect(clipL, Math.min(y(a), y(b)), clipR - clipL, Math.abs(y(a) - y(b)));
   }
+  /* ── Podklad: kde nahrávka vůbec zní ──────────────────────────────────────
+   * Před tóny, aby značky zůstaly navrchu. Kreslí se jen když data máme.
+   *
+   * PROČ TO TU JE: bez podkladu je každé místo bez tónu nerozeznatelné od
+   * ticha. Naměřeno na nahrávce s varhanami (130 s): ani jedna sekunda ticha,
+   * přesto graf vypadal jako děravý — výška se našla jen ve 32,6 % rámců a ze
+   * 63 tónových úseků jich 43 vypadlo jako mimo obor.
+   *
+   * ⚠️ DVA DŮLEŽITÉ DETaily, které se musí držet, jinak je vrstva k ničemu:
+   *
+   *  1. **Výška obrysu se normuje na ROZSAH SAMOTNÉHO OBRYSU** (5.–95.
+   *     percentil), ne na rozsah osy dB. Když se mapoval na osu (−44…−2,5 dB),
+   *     vyšel celý obrys jako rovná tenká linka — naměřeno: nahrávka má RMS
+   *     −52…−12 dBFS, ale v pruhu vysokém 6 px se ta variace ztratila a podklad
+   *     vypadal jako jednolitý pruh. Pruh je jen orientační, ne měřítko.
+   *  2. **Tmavé úseky (signál bez výšky) se kreslí AŽ PO obrysu.** Když se
+   *     kreslily před ním, obrys je svou plochou překryl a v grafu nebyly vidět
+   *     vůbec (přesně to se stalo napoprvé). */
+  const env = opts.signalEnvelope || [];
+  const segs = opts.pitchSegments || [];
+  if (env.length >= 2 || segs.length) {
+    /* Rozsah obrysu z jeho vlastních percentilů — pár výpadků (náraz, lupnutí)
+     * by jinak stlačilo zbytek do jedné linky. */
+    let baseDb = NaN, refDb = NaN;
+    if (env.length >= 5) {
+      const v = env.map(p => p[1]).sort((a, b) => a - b);
+      baseDb = v[Math.floor(v.length * 0.05)];
+      refDb = v[Math.min(v.length - 1, Math.floor(v.length * 0.95))];
+      if (!(refDb > baseDb)) { baseDb = v[0]; refDb = v[v.length - 1]; }
+    }
+    const span = Math.max(1e-6, refDb - baseDb);
+    const yb = (v) => base.lo + (1 - Math.min(1, Math.max(0, (v - baseDb) / span))) * (base.hi - base.lo);
+    const bottomB = base.hi;
+
+    ctx.save();
+    ctx.beginPath(); ctx.rect(clipL, padT, clipR - clipL, plotH); ctx.clip();
+
+    /* 1) obrys signálu — plocha od spodní hrany pruhu nahoru. Jedna cesta tam
+     * a zpět, ne dva tahy (dva by v překryvu ztmavly). */
+    if (env.length >= 2) {
+      ctx.fillStyle = 'rgba(158,148,138,.70)';
+      ctx.beginPath();
+      ctx.moveTo(x(env[0][0]), yb(env[0][1]));
+      for (let i = 1; i < env.length; i++) ctx.lineTo(x(env[i][0]), yb(env[i][1]));
+      for (let i = env.length - 1; i >= 0; i--) ctx.lineTo(x(env[i][0]), bottomB);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(200,190,180,.75)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x(env[0][0]), yb(env[0][1]));
+      for (let i = 1; i < env.length; i++) ctx.lineTo(x(env[i][0]), yb(env[i][1]));
+      ctx.stroke();
+    }
+
+    /* 2) SVĚTLÉ značky tam, kde se výška OPRAVDU našla — až po obrysu, aby byly
+     * vidět. Tmavé značky „signál bez výšky" se zkoušely a NEJSOU vidět: úseky
+     * mají běžně 0,2–0,4 s, což je na 130 s v 785 px jen 1–2 px, takže v pruhu
+     * splynou. Světlé naopak vyniknou a nesou stejnou informaci obráceně:
+     * kde světlá značka není, tam výška nalezena nebyla. */
+    ctx.fillStyle = 'rgba(232,226,218,.9)';
+    for (const s of segs) {
+      const xa = x(s.t0), xb = x(s.t1);
+      if (xb < clipL - 4 || xa > clipR + 4) continue;
+      ctx.fillRect(xa, base.lo, Math.max(1, xb - xa), base.hi - base.lo);
+    }
+    ctx.restore();
+  }
+
   /* VŠECHNY TÓNY KŘIVKOU. Krátký tón se dřív kreslil plným sloupcem, protože
    * časovou řadu dostal až od 0,6 s — jenže sloupec je starší měření (průměr
    * spekter) a křivka přesné (po rámcích, p90), takže v jednom grafu stála dvě

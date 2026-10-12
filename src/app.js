@@ -11,6 +11,7 @@ import {
 } from './charts.js';
 import { initLive } from './live-ui.js';
 import { sniffSampleRate } from './sample-rate.js';
+import { encodeWav, wavFileName } from './wav.js';
 import { newEtaState, etaStep, resetEta } from './progress.js';
 
 const $ = (id) => document.getElementById(id);
@@ -398,6 +399,11 @@ function showResult(res, samples, sampleRate, label, secs, blob) {
   lastPane = '';
   $('panel-result').classList.remove('hidden');
   $('r-title').textContent = label;
+  /* Uložit nahrávku jde jen z měření, které má vzorky v paměti — u výsledku
+   * z historie (jen čísla) by tlačítko lhalo. Hlášení o uložení se resetuje. */
+  $('r-wav')?.classList.add('hidden');
+  const wavBtn = $('btn-wav');
+  if (wavBtn) wavBtn.disabled = !(samples && samples.length);
   const dur = res.duration_s;
   $('r-meta').textContent =
     `${Math.floor(dur / 60)}:${String(Math.round(dur % 60)).padStart(2, '0')} · ` +
@@ -691,6 +697,23 @@ function verdict(res) {
 
   if (s.dropouts && s.dropouts.length) {
     parts.push(`Vrátit se na ${s.dropouts.length} ${czPlural(s.dropouts.length, 'místo', 'místa', 'míst')} — najdeš ${czPlural(s.dropouts.length, 'ho', 'je', 'je')} v grafu níž podle času.`);
+  }
+
+  /* Kolik tónových úseků vypadlo kvůli OBORU — u nahrávky s doprovodem je to
+   * většina a bez téhle věty člověk vidí děravý graf a hledá vadu v sobě.
+   * Naměřeno na 130s nahrávce s varhanami: 63 tónových úseků, z toho 43 mimo
+   * tenor (A#2 24×, F2 9×, …), zbylo 20 značek.
+   *
+   * Věta se hlásí jen když je to PODSTATNÁ část — u jedné dvou not by jen
+   * znepokojovala. A vždycky se přizná, že jde o odhad: appka neumí rozeznat
+   * doprovod od hlasu, jen ví, že tóny ležely mimo zvolený obor. */
+  const nOut = s.n_dropped_out_of_range || 0;
+  if (nOut >= 3 && nOut >= (res.n_dropped || 0) / 2) {
+    const noty = (s.dropped_out_of_range_notes || []).join(', ');
+    parts.push(`<strong>${nOut} ${czPlural(nOut, 'úsek', 'úseky', 'úseků')} vypadlo mimo obor</strong> ` +
+      `tenor${noty ? ' (' + escapeHtml(noty) + ')' : ''} — v grafu po nich zůstávají prázdná místa. ` +
+      'Bývá to doprovod (klavír, varhany) nebo tóny v nižší poloze, než jaký obor máš zvolený. ' +
+      'Přepni <strong>Rozsah nahrávky</strong>, pokud jsi zpíval níž.');
   }
 
   /* Průběh ringu v čase — jiná otázka než „drží na každém tónu": tady jde
@@ -1090,8 +1113,21 @@ function watchChartLayout() {
  */
 const sprScroll = { width: 0, offX: 0 };
 
+/**
+ * Volby kresby grafu ringu — rozměry, posuv, délka A DATA PODKLADU.
+ *
+ * `signalEnvelope` a `pitchSegments` se předávají do kresby, aby bylo v grafu
+ * vidět, kde nahrávka vůbec zní a kde v ní byla nalezena výška. Bez nich je
+ * každé místo bez tónu nerozeznatelné od ticha — naměřeno na nahrávce
+ * s varhanami: ani jedna sekunda ticha, a přesto graf vypadal děravý.
+ */
 function sprDrawOpts() {
-  return { width: sprScroll.width, offX: sprScroll.offX, duration: current?.result?.duration_s || 0 };
+  const r = current?.result;
+  return {
+    width: sprScroll.width, offX: sprScroll.offX, duration: r?.duration_s || 0,
+    signalEnvelope: r?.signal_envelope || null,
+    pitchSegments: r?.pitch_segments || null,
+  };
 }
 
 function layoutSpr() {
@@ -1361,11 +1397,37 @@ function paintHeads(t, force = false) {
 
 function download(name, text, mime = 'text/plain') {
   const b = new Blob([text], { type: mime + ';charset=utf-8' });
+  downloadBlob(name, b);
+}
+
+/** Stažení binárního souboru (nahrávka jako WAV — viz `src/wav.js`). */
+function downloadBlob(name, blob) {
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(b);
+  a.href = URL.createObjectURL(blob);
   a.download = name;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
+/**
+ * Uloží nahrávku jako zvukový soubor (WAV), aby se dala poslat nebo archivovat.
+ *
+ * Vzorky jsou ty DEKÓDOVANÉ (`current.samples`) — tedy přesně to, co se
+ * analyzovalo, včetně mono mixu. Když vzorky nejsou (nemá co se uložit), řekne
+ * se to; tiché tlačítko je horší než hláška.
+ */
+function saveRecording() {
+  const s = current?.samples;
+  if (!s || !s.length) {
+    alert('Nahrávka k uložení není — udělej nové měření (u výsledku z historie ' +
+      'se ukládají jen čísla, ne zvuk).');
+    return;
+  }
+  const wav = encodeWav(s, current.sampleRate || 48000);
+  const mb = (wav.length / 1048576).toFixed(1);
+  downloadBlob(wavFileName(), new Blob([wav], { type: 'audio/wav' }));
+  $('r-wav').textContent = `Nahrávka uložena (WAV, ${mb} MB)`;
+  $('r-wav').classList.remove('hidden');
 }
 
 function makeMarkdown() {
@@ -1524,6 +1586,7 @@ function init() {
   $('btn-md').onclick = () => download('analyza.md', makeMarkdown(), 'text/markdown');
   $('btn-json').onclick = () => download('analyza.json',
     JSON.stringify(current.result, (k, v) => (v === undefined ? null : v), 2), 'application/json');
+  $('btn-wav').onclick = saveRecording;
   $('btn-clear').onclick = () => {
     if (confirm('Smazat všechna uložená měření? Tuto akci nelze vrátit.')) {
       localStorage.removeItem(HIST_KEY);

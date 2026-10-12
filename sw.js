@@ -2,14 +2,14 @@
  * Service worker — offline provoz.
  * Verze cache zvyš při změně souborů, jinak se drží stará.
  */
-const CACHE = 'vocal-lab-v41';
+const CACHE = 'vocal-lab-v43';
 
 /**
  * Verze nasazeného buildu. Zvyšovat spolu s CACHE výše a s ?v= v index.html.
  * Vypisuje se v patičce aplikace, aby uživatel poznal, že aktualizace proběhla —
  * bez toho po kliknutí na tlačítko nemá jak zjistit, jestli se něco stalo.
  */
-const APP_VERSION = '1.0.41';
+const APP_VERSION = '1.0.43';
 const ASSETS = [
   './',
   './index.html',
@@ -19,6 +19,9 @@ const ASSETS = [
   './src/app.js',
   './src/analysis.js',
   './src/sample-rate.js',
+  // uložení nahrávky jako WAV — bez tohoto modulu by tlačítko „Uložit
+  // nahrávku“ v offline režimu spadlo na chybějícím modulu
+  './src/wav.js',
   // odhad zbývajícího času (čistá logika) — bez něj by offline režim
   // otevřel stránku, ale analýza by spadla na chybějícím modulu
   './src/progress.js',
