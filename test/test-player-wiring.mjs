@@ -164,6 +164,30 @@ check('ukazatel se vykreslil bez chyby', errors.length === 0);
     chyba2 ? `${chyba2.name}: ${chyba2.message}`
       : errors.length > before ? `${errors[before].name}: ${errors[before].message}`
         : `URL: ${objectUrls.length - jsonBefore}`);
+
+  /* „Uložit nahrávku (WAV)" — zvukový soubor z analyzovaných vzorků.
+   * Kontroluje se TYP a VELIKOST, ne jen že něco vzniklo: 44 B hlavička
+   * + 2 B na vzorek mono 16 bit. Kdyby se (omylem) ukládal původní blob,
+   * typ by byl `audio/wav` taky — proto velikost, ta ho prozradí. */
+  const wavBefore = objectUrls.length;
+  let chyba3 = null;
+  try { el('btn-wav').onclick(); } catch (e) { chyba3 = e; }
+  await sleep(40);
+  const wavUrl = objectUrls.slice(wavBefore).find(u => u.blob?.type === 'audio/wav');
+  const nSamples = env.offlineSamples ? env.offlineSamples.length : null;
+  check('„Uložit nahrávku" vyrobí WAV bez chyby',
+    !chyba3 && errors.length === before && !!wavUrl && wavUrl.blob.size > 44,
+    chyba3 ? `${chyba3.name}: ${chyba3.message}`
+      : errors.length > before ? `${errors[before].name}: ${errors[before].message}`
+        : wavUrl ? `${wavUrl.blob.type}, ${wavUrl.blob.size} B` : 'žádná URL');
+  if (nSamples) {
+    check('WAV má 44 B hlavičky + 2 B na vzorek',
+      wavUrl?.blob?.size === 44 + nSamples * 2,
+      `${wavUrl?.blob?.size} B při ${nSamples} vzorcích`);
+  } else {
+    check('WAV má sudý počet bajtů dat (16bitové vzorky)',
+      wavUrl?.blob?.size % 2 === 0, `${wavUrl?.blob?.size} B`);
+  }
 }
 
 /* ── nové měření uklidí přehrávač ──────────────────────────────────────── */

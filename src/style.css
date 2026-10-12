@@ -228,6 +228,23 @@ select:focus-visible, .btn:focus-visible, .link:focus-visible {
   /* ukazatel je absolutně přes graf, takže musí být uvnitř posuvné plochy */
   -webkit-overflow-scrolling: touch;
 }
+/* ⚠️ POSUVNÍK MUSÍ BÝT VIDĚT, I KDYŽ SE PRÁVĚ NEPOSOUVÁ.
+ *
+ * Reálná vada, kterou uživatel nahlásil jako „graf skončil dřív než nahrávka“:
+ * graf se od 1.0.43 rozprostírá na několik obrazovek (na jeho nahrávce 3 079 px
+ * při okně 330 px), ale mobilní prohlížeč kreslí posuvník jen BĚHEM posunu
+ * a přes obsah. Bez něj není z obrázku poznat, že graf pokračuje doprava —
+ * vypadá to, že kresba končí na okraji okna.
+ *
+ * Proto je pruh viditelný stále (8 px, barvy tématu). Výšku si bere z pruhu
+ * uvnitř grafu: `overflow-y: hidden` znamená, že se plátno o 8 px zkrátí na
+ * spodním okraji, kde je jen prázdná vnitřní mezera (padB = 34 px) — výška
+ * panelu se tím NEMĚNÍ, takže přepnutí záložky dál nic neposouvá
+ * (hlídá `check-zalozky-browser.mjs`). */
+.chart-wrap.scrollable { scrollbar-width: thin; scrollbar-color: var(--fg-mute) rgba(255, 255, 255, .06); }
+.chart-wrap.scrollable::-webkit-scrollbar { height: 8px; }
+.chart-wrap.scrollable::-webkit-scrollbar-track { background: rgba(255, 255, 255, .06); }
+.chart-wrap.scrollable::-webkit-scrollbar-thumb { background: var(--fg-mute); border-radius: 4px; }
 /* ⚠️ TADY BYLO `position: sticky; width: 100%` — a byl to zdroj DVOU chyb:
  *  1. `sticky` s `left: 0` na prvku, který je v posuvné ploše jediným prvkem
  *     v toku (graf je absolutní), nemá kam se lepit — prvek zůstane v toku

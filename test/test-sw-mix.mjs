@@ -23,6 +23,7 @@ import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import http from 'node:http';
+import { guard } from './lib/chrome-guard.mjs';
 
 const ROOT = path.join(import.meta.dirname, '..');
 const PORT = 8181, CDP_PORT = 9381;
@@ -62,6 +63,30 @@ tar(NOVA_REV, B);
  * v žádném commitu, takže bez toho by test měřil starý kód a padal pořád. */
 fs.copyFileSync(path.join(ROOT, 'sw.js'), path.join(B, 'sw.js'));
 fs.copyFileSync(path.join(ROOT, 'index.html'), path.join(B, 'index.html'));
+/* ⚠️ A DOPLNIT MODULY, KTERÉ PRACOVNÍ VERZE PŘIDALA — starší revize je nemá.
+ *
+ * `sw.js` z pracovního stromu má v `ASSETS` i soubory, které v revizi NOVA_REV
+ * ještě neexistovaly (např. `src/wav.js` v 1.0.43). `cache.addAll(ASSETS)` je
+ * ATOMICKÉ: jeden 404 shodí celé plnění cache, takže nová cache zůstane
+ * prázdná, stránka se dál servíruje ze STARÉ a test pak hlásí smíchané verze
+ * a „živý spektrogram nekreslí“ — vada, která v produkci vzniknout nemůže
+ * (na gh-pages ten soubor je). Naměřeno: přesně takhle test padal, dokud se
+ * nový modul do fixture nedoplnil.
+ *
+ * Doplnit se smí JEN soubory, které v B chybí — ty, které tam jsou, musí
+ * zůstat z revize NOVA_REV, jinak se ztratí smysl testu (porovnává se obsah
+ * dvou různých verzí). */
+const assetsZSv = fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8')
+  .match(/const ASSETS = \[([\s\S]*?)\];/)[1]
+  .match(/'\.\/([^']+)'/g).map(s => s.slice(3, -1));
+for (const rel of assetsZSv) {
+  if (!rel || rel === '') continue;
+  const dst = path.join(B, rel), src = path.join(ROOT, rel);
+  if (fs.existsSync(dst) || !fs.existsSync(src)) continue;
+  fs.mkdirSync(path.dirname(dst), { recursive: true });
+  fs.copyFileSync(src, dst);
+  console.log(`  → do fixture doplněn nový modul z pracovní verze: ${rel}`);
+}
 
 /* ── server, jehož obsah se dá „nasadit" přepnutím ───────────────────────── */
 
@@ -91,6 +116,7 @@ const chrome = spawn('chromium-browser', [
   `--use-file-for-fake-audio-capture=${path.join(ROOT, 'rec-test/zpev.wav')}`,
   '--autoplay-policy=no-user-gesture-required', 'about:blank',
 ], { stdio: ['ignore', 'ignore', 'ignore'] });
+const stop = guard({ chrome: chrome, port: CDP_PORT, hardTimeoutMs: 300000 });
 
 let ws;
 for (let i = 0; i < 60; i++) {

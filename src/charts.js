@@ -62,34 +62,56 @@ export const SPR_H = 230;
 const SPR_PAD = { l: 46, r: 12, t: 14, b: 34 };
 
 /**
- * Minimální šířka, na kterou se jeden tón v grafu ringu vykreslí.
+ * Kolik pixelů má dostat TYPICKÝ tón v grafu ringu.
  *
- * PROČ 6 px: při 4 px a méně splývají sousední sloupce a ztratí se rozdíl mezi
- * tónem s ringem a bez — což je přesně to, kvůli čemu graf existuje. Uživatel
- * na 4minutové nahrávce viděl „nalepené" hodnoty; naměřeno, že při 6 px na tón
- * je ještě poznat mezera, takže se graf musí dát posouvat.
+ * ⚠️ Měřítko se NESMÍ počítat z POČTU tónů (dřív `počet × 6 px`). To platí jen
+ * na nahrávce, kde se zpívá pořád: když je v nahrávce 15 s pauza nebo dlouhé
+ * ticho, čas se do šířky rozprostře a na tóny zbydou 2 px.
+ *
+ * Naměřeno na reálné nahrávce uživatele (154 s, 95 tónů, 88 s zpěvu, medián
+ * tónu 0,60 s): `počet × 6 px` → plátno 599 px = **3,51 px/s**, medián šířky
+ * tónu **2,1 px**, a **jen 24 z 95 tónů bylo v grafu rozeznatelných** (zbytek
+ * se slil do souvislé šmouhy — 91 % sloupců plátna mělo inkoust tónu).
+ * Přesně to uživatel popsal jako „graf je nahuštěný na určitou plochu“.
+ *
+ * Měřítko se proto bere z DÉLKY TÓNU: typický (mediánový) tón má dostat
+ * `MIN_PX_PER_NOTE` px, tedy `px/s = MIN_PX_PER_NOTE / mediánDélky`. Graf je
+ * pak delší než obrazovka a posouvá se — což je levnější než nečitelný graf.
+ *
+ * ⚠️ 8 px je vybrané číslo (Jan, 1.0.43): při 12 px vyšlo plátno 3 079 px
+ * (na telefonu ~10 obrazovek posunu), 8 px dá 2 052 px / ~7 obrazovek a tóny
+ * jsou pořád výrazně oddělené. Když se mění, hýbe se tím i `test-sirka-grafu`.
  */
-const MIN_PX_PER_NOTE = 6;
+const MIN_PX_PER_NOTE = 8;
+/** Krátký tón (pod 0,15 s) by jinak měřítko vystřelil do absurdní šířky. */
+const MIN_TONE_S = 0.15;
+/**
+ * Strop šířky plátna. Bez něj by pětiminutová nahrávka vyšla na 6 000 px a na
+ * telefonu s dpr 3 by bitmapa měla 18 000 px (desítky MB) — prohlížeč by
+ * zpomalil. Se stropem se dlouhá nahrávka jen víc zmáčkne, ne že by graf zmizel.
+ */
+export const MAX_CHART_W = 4000;
 
 /**
  * Kolik CSS pixelů šířky si graf ringu vyžádá, aby tóny nebyly nalepené.
  *
- * Do šířky okna se vykresluje napevno (nic se neposouvá), takže se posuvné
- * plátno zapíná až u delších nahrávek. Vrací 0, když se to nepozná —
- * `Math.max(0, …)` níž by jinak z nesmyslné délky udělal nulovou šířku.
+ * Do šířky okna se kreslí napevno (nic se neposouvá), takže se posuvné plátno
+ * zapíná až u delších nahrávek. Vrací 0, když se to nepozná nebo když se graf
+ * do okna vejde.
  *
  * @param {number} availW šířka, která je k dispozici v CSS px
  * @param {object[]} notes tóny
  * @param {number} t1 délka nahrávky v sekundách
  */
 export function sprNeededWidth(availW, notes, t1) {
-  const meas = (notes || []).filter(n => n.spr === n.spr);
+  const meas = (notes || []).filter(n => n.spr === n.spr && n.dur > 0);
   if (!meas.length || !(t1 > 0) || !(availW > 0)) return 0;
-  if (meas.length * MIN_PX_PER_NOTE <= availW) return 0;
-  // sloupec dostane aspoň MIN_PX_PER_NOTE, ale ne šířku nahrávky — u dvou
-  // dlouhých tónů by jinak graf vyjel do absurdní šířky
-  const w = Math.ceil(meas.length * MIN_PX_PER_NOTE);
-  return Math.min(Math.ceil(w * 1.05), Math.max(availW, 4000));
+  const durs = meas.map(n => n.dur).sort((a, b) => a - b);
+  const medDur = Math.max(MIN_TONE_S, durs[durs.length >> 1]);
+  const pxPerS = MIN_PX_PER_NOTE / medDur;
+  const want = Math.ceil(t1 * pxPerS);
+  if (want <= availW) return 0;
+  return Math.min(want, MAX_CHART_W);
 }
 
 /* Spektrogram má STEJNOU výšku jako graf ringu (SPR_H). Když byl vyšší

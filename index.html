@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Hlas">
-<link rel="stylesheet" href="src/style.css?v=42">
+<link rel="stylesheet" href="src/style.css?v=43">
 </head>
 <body>
 
@@ -386,8 +386,15 @@
         <button id="btn-save" class="btn primary" type="button">Uložit do historie</button>
         <button id="btn-md" class="btn" type="button">Stáhnout report</button>
         <button id="btn-json" class="btn" type="button">Stáhnout JSON</button>
+        <!-- Nahrávka se ukládá jako WAV (PCM) — formát, o kterém aplikace sama
+             radí a který umí i přečíst zpátky. Vzniká z DEKÓDOVANÝCH vzorků,
+             takže obsahuje přesně to, co se analyzovalo (mono mix). -->
+        <button id="btn-wav" class="btn" type="button">Uložit nahrávku (WAV)</button>
         <button id="btn-new" class="btn ghost" type="button">Nové měření</button>
       </div>
+      <p class="hint hidden" id="r-wav"></p>
+      <p class="hint">WAV obsahuje zvuk, který se analyzoval (mono, 16 bit).
+         Původní soubor z telefonu se neukládá — prohlížeč ho drží jen v paměti.</p>
     </div>
   </section>
 
@@ -445,6 +452,6 @@
 
 <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
-<script type="module" src="src/app.js?v=42"></script>
+<script type="module" src="src/app.js?v=43"></script>
 </body>
 </html>
