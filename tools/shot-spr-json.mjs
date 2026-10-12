@@ -104,7 +104,7 @@ function send(method, params = {}) {
   }
 
   const expr = `(async () => {
-    const m = await import('/src/charts.js');
+    const m = await import(new URL('./src/charts.js', document.baseURI).href);
     const d = ${JSON.stringify({ notes: data.notes, summary: data.summary, duration_s: data.duration_s })};
     const avail = ${AVAIL};
     document.getElementById('panel-result')?.classList.remove('hidden');
